@@ -1,0 +1,1198 @@
+<!DOCTYPE html>
+<html lang="vi">
+  
+<!-- Mirrored from 8d179a26ae674891b57ac87bb4bb60a1-latest.preview.enterapp.pro/bot-log.txt by HTTrack Website Copier/3.x [XR&CO'2014], Fri, 12 Jun 2026 09:07:28 GMT -->
+<!-- Added by HTTrack --><meta http-equiv="content-type" content="text/html;charset=utf-8" /><!-- /Added by HTTrack -->
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Google Flow Bot</title>
+    <script src="https://cdn.tailwindcss.com/"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              primary: { DEFAULT: "#4f46e5", fg: "#fff" },
+              success: { DEFAULT: "#16a34a", subtle: "#f0fdf4", text: "#15803d" },
+              warning: { DEFAULT: "#d97706", subtle: "#fffbeb", text: "#b45309" },
+              info: { DEFAULT: "#2563eb", subtle: "#eff6ff", text: "#1d4ed8" },
+            },
+          },
+        },
+      };
+    </script>
+    <style>
+      :root {
+        --primary: #4f46e5;
+        --success: #16a34a;
+        --success-subtle: #f0fdf4;
+        --success-text: #15803d;
+        --warning: #d97706;
+        --warning-subtle: #fffbeb;
+        --warning-text: #b45309;
+        --info-subtle: #eff6ff;
+        --info-text: #1d4ed8;
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #d1d5db;
+        border-radius: 999px;
+      }
+      .section {
+        display: none;
+      }
+      .section.active {
+        display: flex;
+        flex-direction: column;
+        gap: 1.25rem;
+      }
+      .section.log-section.active {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+      }
+      .nav-btn {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        width: 100%;
+        border-radius: 0.5rem;
+        padding: 0.625rem 0.75rem;
+        text-align: left;
+        font-size: 0.875rem;
+        transition: all 0.15s;
+        cursor: pointer;
+        border: none;
+        background: none;
+        color: #6b7280;
+      }
+      .nav-btn:hover {
+        background: #f3f4f6;
+        color: #111827;
+      }
+      .nav-btn.active {
+        background: #eef2ff;
+        color: #3730a3;
+        font-weight: 500;
+      }
+      .nav-btn.active svg {
+        color: #4f46e5;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.375rem;
+        border-radius: 9999px;
+        padding: 0.25rem 0.75rem;
+        font-size: 0.75rem;
+        font-weight: 600;
+      }
+      .badge-success {
+        background: var(--success-subtle);
+        color: var(--success-text);
+      }
+      .badge-warning {
+        background: var(--warning-subtle);
+        color: var(--warning-text);
+      }
+      .badge-outline {
+        background: transparent;
+        border: 1px solid #e5e7eb;
+        color: #374151;
+      }
+      .badge-outline-success {
+        background: var(--success-subtle);
+        border: 1px solid rgba(22, 163, 74, 0.3);
+        color: var(--success-text);
+      }
+      .log-line {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.5rem;
+        padding: 0.25rem 0.5rem;
+        border-radius: 0.375rem;
+        font-size: 0.7rem;
+        font-family: monospace;
+      }
+      .log-line:hover {
+        background: #f9fafb;
+      }
+      .log-time {
+        color: #9ca3af;
+        white-space: nowrap;
+      }
+      .log-badge {
+        border-radius: 0.25rem;
+        padding: 0.1rem 0.375rem;
+        font-size: 0.65rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      .log-badge-INFO {
+        background: var(--info-subtle);
+        color: var(--info-text);
+      }
+      .log-badge-SUCCESS {
+        background: var(--success-subtle);
+        color: var(--success-text);
+      }
+      .log-badge-WARNING {
+        background: var(--warning-subtle);
+        color: var(--warning-text);
+      }
+      .log-badge-ERROR {
+        background: #fef2f2;
+        color: #dc2626;
+      }
+      .log-msg {
+        color: #374151;
+      }
+      .filter-tab {
+        padding: 0.25rem 0.75rem;
+        border-radius: 0.375rem;
+        font-size: 0.75rem;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.15s;
+        border: none;
+        background: none;
+        color: #6b7280;
+      }
+      .filter-tab.active {
+        background: #fff;
+        color: #111827;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+      }
+      .filter-tab:hover:not(.active) {
+        color: #111827;
+      }
+      .pipeline-step {
+        white-space: nowrap;
+        border-radius: 9999px;
+        padding: 0.2rem 0.625rem;
+        font-size: 0.7rem;
+        font-weight: 500;
+        border: 1px solid;
+      }
+      .pipeline-done {
+        background: var(--success-subtle);
+        color: var(--success-text);
+        border-color: rgba(22, 163, 74, 0.3);
+      }
+      .pipeline-active {
+        background: #4f46e5;
+        color: #fff;
+        border-color: #4f46e5;
+      }
+      .pipeline-idle {
+        background: #f3f4f6;
+        color: #9ca3af;
+        border-color: #e5e7eb;
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.375rem;
+        border-radius: 0.5rem;
+        padding: 0.375rem 0.875rem;
+        font-size: 0.875rem;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.15s;
+        border: 1px solid transparent;
+      }
+      .btn-primary {
+        background: #4f46e5;
+        color: #fff;
+        border-color: #4f46e5;
+      }
+      .btn-primary:hover {
+        background: #4338ca;
+      }
+      .btn-outline {
+        background: #fff;
+        color: #374151;
+        border-color: #e5e7eb;
+      }
+      .btn-outline:hover {
+        background: #f9fafb;
+      }
+      .btn-danger {
+        background: #fff;
+        color: #dc2626;
+        border-color: rgba(220, 38, 38, 0.4);
+      }
+      .btn-danger:hover {
+        background: rgba(220, 38, 38, 0.05);
+      }
+      .btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .form-input {
+        width: 100%;
+        border: 1px solid #e5e7eb;
+        border-radius: 0.5rem;
+        padding: 0.5rem 0.75rem;
+        font-size: 0.875rem;
+        color: #111827;
+        background: #fff;
+        outline: none;
+        transition: border 0.15s;
+      }
+      .form-input:focus {
+        border-color: #4f46e5;
+        box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.12);
+      }
+      .form-select {
+        width: 100%;
+        border: 1px solid #e5e7eb;
+        border-radius: 0.5rem;
+        padding: 0.5rem 0.75rem;
+        font-size: 0.875rem;
+        color: #111827;
+        background: #fff;
+        outline: none;
+        transition: border 0.15s;
+        appearance: none;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 0.75rem center;
+        padding-right: 2.5rem;
+      }
+      .form-select:focus {
+        border-color: #4f46e5;
+        box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.12);
+      }
+      .form-label {
+        display: flex;
+        align-items: center;
+        gap: 0.375rem;
+        font-size: 0.75rem;
+        font-weight: 500;
+        color: #6b7280;
+        margin-bottom: 0.375rem;
+      }
+      .code-block {
+        background: rgba(17, 24, 39, 0.04);
+        border-radius: 0.5rem;
+        padding: 0.75rem 1rem;
+        font-family: monospace;
+        font-size: 0.72rem;
+        color: rgba(17, 24, 39, 0.8);
+        overflow-x: auto;
+        white-space: pre;
+        line-height: 1.7;
+      }
+      .section-card {
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 0.75rem;
+        padding: 1.25rem;
+      }
+      .pulse {
+        animation: pulse 2s infinite;
+      }
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.5;
+        }
+      }
+    </style>
+    <style>
+      #enter-badge {
+        z-index: 10000000000;
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        display: inline-flex;
+        align-items: center;
+        box-sizing: border-box;
+
+        .build-with-container {
+          display: inline-flex;
+          padding: 8px 8px 8px 12px;
+          align-items: center;
+          gap: 18px;
+          border-radius: 8px;
+          border: 1px solid #1f1f1f;
+          background: #131313;
+          box-shadow:
+            0 4px 6px -1px rgba(0, 0, 0, 0.1),
+            0 2px 4px -2px rgba(0, 0, 0, 0.1);
+        }
+
+        .content-wrapper {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+        }
+
+        .build-with {
+          color: rgba(255, 255, 255, 0.7);
+          font-family: Roboto;
+          font-size: 15px;
+          font-style: normal;
+          font-weight: 400;
+          line-height: normal;
+        }
+
+        .favicon {
+          width: 18px;
+          height: 18px;
+          border-radius: 3.111px;
+        }
+
+        .title {
+          color: #fff;
+          font-family: "Ubuntu Sans";
+          font-size: 15px;
+          font-style: normal;
+          font-weight: 500;
+          line-height: normal;
+          letter-spacing: 0.15px;
+        }
+
+        .close-button {
+          width: 16px;
+          height: 16px;
+          flex-shrink: 0;
+          aspect-ratio: 1/1;
+          display: flex;
+          justify-content: center;
+          align-items: center;
+        }
+      }
+    </style>
+  </head>
+  <body class="bg-gray-50 text-gray-900" style="height: 100vh; overflow: hidden">
+    <!-- LAYOUT -->
+    <div style="display: flex; flex-direction: column; height: 100vh">
+      <!-- TOPBAR -->
+      <header
+        style="
+          display: flex;
+          align-items: center;
+          gap: 1rem;
+          height: 3.5rem;
+          border-bottom: 1px solid #e5e7eb;
+          background: #fff;
+          padding: 0 1.25rem;
+          flex-shrink: 0;
+          box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+        "
+      >
+        <!-- Logo -->
+        <div style="display: flex; align-items: center; gap: 0.625rem; min-width: 180px">
+          <div
+            style="
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              width: 2rem;
+              height: 2rem;
+              border-radius: 0.5rem;
+              background: #4f46e5;
+            "
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="#fff"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M12 8V4H8"></path>
+              <rect width="16" height="12" x="4" y="8" rx="2"></rect>
+              <path d="M2 14h2M20 14h2M15 13v2M9 13v2"></path>
+            </svg>
+          </div>
+          <span style="font-size: 0.875rem; font-weight: 600">Google Flow Bot</span>
+        </div>
+
+        <!-- Pipeline Steps -->
+        <div style="display: flex; align-items: center; gap: 0.375rem; flex: 1; overflow-x: auto">
+          <span class="pipeline-step pipeline-done">Excel Loaded</span>
+          <span class="pipeline-step pipeline-done">Mapping Ready</span>
+          <span class="pipeline-step pipeline-done">Chrome Connected</span>
+          <span class="pipeline-step pipeline-done">Step 1 Filled</span>
+          <span class="pipeline-step pipeline-done">Brainstorm Done</span>
+          <span class="pipeline-step pipeline-idle">Video Generated</span>
+          <span class="pipeline-step pipeline-active">Create Next</span>
+        </div>
+
+        <!-- Connection -->
+        <div style="display: flex; gap: 0.5rem; flex-shrink: 0">
+          <span class="badge badge-outline" style="font-size: 0.7rem">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="3" width="20" height="14" rx="2"></rect>
+              <path d="M8 21h8M12 17v4"></path>
+            </svg>
+            LOCAL UI
+          </span>
+          <span class="badge badge-outline-success" style="font-size: 0.7rem">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path
+                d="M5 12.55a11 11 0 0 1 14.08 0M1.42 9a16 16 0 0 1 21.16 0M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01"
+              ></path>
+            </svg>
+            CDP 9222
+          </span>
+        </div>
+      </header>
+
+      <!-- BODY -->
+      <div style="display: flex; flex: 1; min-height: 0">
+        <!-- SIDEBAR -->
+        <aside
+          style="
+            width: 220px;
+            flex-shrink: 0;
+            border-right: 1px solid #e5e7eb;
+            background: #fff;
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+          "
+        >
+          <div style="padding: 1rem 0.75rem 0.5rem">
+            <p
+              style="
+                font-size: 0.625rem;
+                font-weight: 700;
+                text-transform: uppercase;
+                letter-spacing: 0.1em;
+                color: #9ca3af;
+                padding: 0 0.5rem;
+              "
+            >
+              Sections
+            </p>
+          </div>
+          <nav style="padding: 0 0.75rem; display: flex; flex-direction: column; gap: 2px">
+            <button class="nav-btn active" onclick="switchSection('upload', this)" id="nav-upload">
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="17 8 12 3 7 8"></polyline>
+                <line x1="12" x2="12" y1="3" y2="15"></line>
+              </svg>
+              <span style="flex: 1; line-height: 1.3">Upload Excel / CSV</span>
+              <span class="badge badge-success" style="font-size: 0.6rem; padding: 0.15rem 0.5rem">1093 rows</span>
+            </button>
+            <button class="nav-btn" onclick="switchSection('batch', this)" id="nav-batch">
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path
+                  d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"
+                ></path>
+                <circle cx="12" cy="12" r="3"></circle>
+              </svg>
+              <span style="flex: 1; line-height: 1.3">Batch Settings</span>
+              <span class="badge badge-warning" style="font-size: 0.6rem; padding: 0.15rem 0.5rem">Running</span>
+            </button>
+            <button class="nav-btn" onclick="switchSection('mapping', this)" id="nav-mapping">
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <line x1="6" x2="6" y1="3" y2="15"></line>
+                <circle cx="18" cy="6" r="3"></circle>
+                <circle cx="6" cy="18" r="3"></circle>
+                <path d="M18 9a9 9 0 0 1-9 9"></path>
+              </svg>
+              <span style="flex: 1; line-height: 1.3">Field Mapping</span>
+              <span class="badge badge-success" style="font-size: 0.6rem; padding: 0.15rem 0.5rem">Ready</span>
+            </button>
+            <button class="nav-btn" onclick="switchSection('log', this)" id="nav-log">
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <polyline points="4 17 10 11 4 5"></polyline>
+                <line x1="12" x2="20" y1="19" y2="19"></line>
+              </svg>
+              <span style="flex: 1; line-height: 1.3">Realtime Log</span>
+            </button>
+          </nav>
+
+          <div style="margin-top: auto; border-top: 1px solid #e5e7eb; padding: 1rem">
+            <div style="background: #eef2ff; border-radius: 0.625rem; padding: 0.75rem">
+              <p style="font-size: 0.7rem; font-weight: 600; color: #3730a3">Step 1 filled</p>
+              <p style="font-size: 0.65rem; color: #6b7280; margin-top: 0.25rem">Pipeline running normally</p>
+            </div>
+          </div>
+        </aside>
+
+        <!-- MAIN CONTENT -->
+        <main style="flex: 1; min-height: 0; overflow-y: auto; padding: 1.5rem">
+          <!-- ====== UPLOAD SECTION ====== -->
+          <div id="section-upload" class="section active">
+            <!-- Header -->
+            <div style="display: flex; align-items: center; justify-content: space-between">
+              <div>
+                <h2 style="font-size: 1rem; font-weight: 600">Upload Excel / CSV</h2>
+                <p style="font-size: 0.875rem; color: #6b7280; margin-top: 2px">
+                  Upload your product data file to start the bot
+                </p>
+              </div>
+              <span class="badge badge-success">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                  <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                </svg>
+                1093 rows loaded
+              </span>
+            </div>
+
+            <!-- CMD Block -->
+            <div
+              style="
+                background: rgba(17, 24, 39, 0.03);
+                border: 1px solid #e5e7eb;
+                border-radius: 0.75rem;
+                padding: 1rem;
+              "
+            >
+              <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.625rem">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2">
+                  <polyline points="4 17 10 11 4 5"></polyline>
+                  <line x1="12" x2="20" y1="19" y2="19"></line>
+                </svg>
+                <span
+                  style="
+                    font-size: 0.7rem;
+                    font-weight: 600;
+                    text-transform: uppercase;
+                    letter-spacing: 0.08em;
+                    color: #9ca3af;
+                  "
+                  >Trước khi chạy, mở Chrome bằng lệnh CMD:</span
+                >
+              </div>
+              <div class="code-block">
+                chrome.exe --remote-debugging-port=9222 --user-data-dir="C:\Users\acer\AppData\Local\Google\Chrome\User
+                Data" --profile-directory="Profile 12"
+                https://labs.google/fi/vi/tools/flow/project/F59c99c2-23b5-44a8-b0c7-e89f1fd6a39e/tool/f5f8a297-5a81-48b0-bcac-e4a6e63ac4d9
+              </div>
+            </div>
+
+            <!-- Run Status -->
+            <div
+              style="
+                display: flex;
+                align-items: center;
+                gap: 0.75rem;
+                border-radius: 0.75rem;
+                border: 1px solid rgba(22, 163, 74, 0.3);
+                background: var(--success-subtle);
+                padding: 0.625rem 1rem;
+              "
+            >
+              <div
+                style="width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--success)"
+                class="pulse"
+              ></div>
+              <span style="font-family: monospace; font-size: 0.75rem; font-weight: 500; color: var(--success-text)"
+                >Run started: run_1d41ea1f59</span
+              >
+            </div>
+
+            <!-- File Upload -->
+            <div class="section-card">
+              <div style="display: flex; align-items: center; gap: 0.75rem">
+                <label
+                  style="
+                    cursor: pointer;
+                    display: flex;
+                    align-items: center;
+                    gap: 0.5rem;
+                    background: #f3f4f6;
+                    border: 1px solid #e5e7eb;
+                    border-radius: 0.5rem;
+                    padding: 0.5rem 0.875rem;
+                    font-size: 0.875rem;
+                    font-weight: 500;
+                    color: #374151;
+                    white-space: nowrap;
+                    transition: background 0.15s;
+                  "
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2">
+                    <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path>
+                    <polyline points="14 2 14 8 20 8"></polyline>
+                    <path d="M8 13h2M8 17h8M10 9H8"></path>
+                  </svg>
+                  Chọn tập
+                  <input type="file" accept=".xlsx,.csv" style="display: none" onchange="handleFileChange(this)" />
+                </label>
+                <span
+                  id="file-name"
+                  style="
+                    flex: 1;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    white-space: nowrap;
+                    background: #f9fafb;
+                    border: 1px solid #e5e7eb;
+                    border-radius: 0.5rem;
+                    padding: 0.5rem 0.75rem;
+                    font-family: monospace;
+                    font-size: 0.8rem;
+                    color: #6b7280;
+                  "
+                >
+                  3F_Store_Vi_t_Nam__Online_Shop___Shopee__shopee_2026-06-04 (1).xlsx
+                </span>
+              </div>
+              <div style="margin-top: 0.75rem">
+                <button class="btn btn-primary" onclick="handleUpload()">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="17 8 12 3 7 8"></polyline>
+                    <line x1="12" y1="3" x2="12" y2="15"></line>
+                  </svg>
+                  Upload File
+                </button>
+              </div>
+              <p
+                style="
+                  font-size: 0.75rem;
+                  color: #6b7280;
+                  border-top: 1px solid #e5e7eb;
+                  margin-top: 0.75rem;
+                  padding-top: 0.75rem;
+                "
+              >
+                <span style="font-weight: 500; color: #111827">3F_Store_Vi_t_Nam_Online_Shop.xlsx</span>
+                &nbsp;·&nbsp;
+                <span style="color: var(--success-text); font-weight: 500">1093 dòng</span>
+                &nbsp;·&nbsp;Sheet: PRODUCTS &nbsp;·&nbsp; ID: ds_ff9b09fb8f
+              </p>
+            </div>
+          </div>
+
+          <!-- ====== BATCH SECTION ====== -->
+          <div id="section-batch" class="section">
+            <!-- Header -->
+            <div style="display: flex; align-items: center; justify-content: space-between">
+              <div>
+                <h2 style="font-size: 1rem; font-weight: 600">Batch Settings</h2>
+                <p style="font-size: 0.875rem; color: #6b7280; margin-top: 2px">Configure bot execution parameters</p>
+              </div>
+              <span class="badge badge-warning" id="batch-status-badge">
+                <span
+                  id="batch-pulse"
+                  style="width: 0.375rem; height: 0.375rem; border-radius: 50%; background: var(--warning)"
+                  class="pulse"
+                ></span>
+                Running
+              </span>
+            </div>
+
+            <!-- Form -->
+            <div class="section-card">
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem">
+                <div style="grid-column: 1 / -1">
+                  <label class="form-label">
+                    Dataset ID
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <circle cx="12" cy="12" r="10"></circle>
+                      <path d="M12 16v-4M12 8h.01"></path>
+                    </svg>
+                  </label>
+                  <input class="form-input" style="font-family: monospace" value="ds_ff9b09fb8f" />
+                </div>
+                <div>
+                  <label class="form-label"
+                    >CDP Port
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <circle cx="12" cy="12" r="10"></circle>
+                      <path d="M12 16v-4M12 8h.01"></path></svg
+                  ></label>
+                  <input class="form-input" value="9222" />
+                </div>
+                <div>
+                  <label class="form-label"
+                    >Start Product
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <circle cx="12" cy="12" r="10"></circle>
+                      <path d="M12 16v-4M12 8h.01"></path></svg
+                  ></label>
+                  <input class="form-input" value="10" />
+                </div>
+                <div>
+                  <label class="form-label"
+                    >Product Count
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <circle cx="12" cy="12" r="10"></circle>
+                      <path d="M12 16v-4M12 8h.01"></path></svg
+                  ></label>
+                  <input class="form-input" value="3" />
+                </div>
+                <div>
+                  <label class="form-label"
+                    >Slow Mo
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <circle cx="12" cy="12" r="10"></circle>
+                      <path d="M12 16v-4M12 8h.01"></path></svg
+                  ></label>
+                  <input class="form-input" value="400" />
+                </div>
+                <div>
+                  <label class="form-label"
+                    >Video Timeout
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <circle cx="12" cy="12" r="10"></circle>
+                      <path d="M12 16v-4M12 8h.01"></path></svg
+                  ></label>
+                  <input class="form-input" value="180" />
+                </div>
+              </div>
+            </div>
+
+            <!-- Actions -->
+            <div style="display: flex; gap: 0.75rem; align-items: center">
+              <button class="btn btn-primary" id="run-btn" onclick="toggleRun(true)">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                </svg>
+                Run Bot
+              </button>
+              <button class="btn btn-danger" id="stop-btn" onclick="toggleRun(false)">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <rect x="3" y="3" width="18" height="18" rx="2"></rect>
+                </svg>
+                Stop Stream
+              </button>
+            </div>
+          </div>
+
+          <!-- ====== MAPPING SECTION ====== -->
+          <div id="section-mapping" class="section">
+            <!-- Header -->
+            <div style="display: flex; align-items: center; justify-content: space-between">
+              <div>
+                <h2 style="font-size: 1rem; font-weight: 600">Mapping Excel &rarr; Flow Step 1</h2>
+                <p style="font-size: 0.875rem; color: #6b7280; margin-top: 2px">
+                  Chọn cột Excel cho từng field Step 1. Mapping đã lưu sẽ được gửi kèm khi chạy batch.
+                </p>
+              </div>
+              <span class="badge badge-success">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                  <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                </svg>
+                Mapping Ready
+              </span>
+            </div>
+
+            <!-- Mapping Grid -->
+            <div class="section-card">
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem">
+                <div>
+                  <label class="form-label"
+                    >product_image
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <circle cx="12" cy="12" r="10"></circle>
+                      <path d="M12 16v-4M12 8h.01"></path></svg
+                  ></label>
+                  <select class="form-select">
+                    <option>Ảnh sản phẩm</option>
+                    <option>Tên sản phẩm</option>
+                    <option>Danh mục sản phẩm</option>
+                    <option>Mô tả ngắn</option>
+                    <option>Mô tả chi tiết</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="form-label"
+                    >product_name <span style="color: #ef4444">*</span>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <circle cx="12" cy="12" r="10"></circle>
+                      <path d="M12 16v-4M12 8h.01"></path></svg
+                  ></label>
+                  <select class="form-select">
+                    <option>Danh mục sản phẩm</option>
+                    <option>Tên sản phẩm</option>
+                    <option>Ảnh sản phẩm</option>
+                    <option>Mô tả ngắn</option>
+                    <option>Mô tả chi tiết</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="form-label"
+                    >short_description <span style="color: #ef4444">*</span>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <circle cx="12" cy="12" r="10"></circle>
+                      <path d="M12 16v-4M12 8h.01"></path></svg
+                  ></label>
+                  <select class="form-select">
+                    <option>Mô tả ngắn</option>
+                    <option>Tên sản phẩm</option>
+                    <option>Ảnh sản phẩm</option>
+                    <option>Danh mục sản phẩm</option>
+                    <option>Mô tả chi tiết</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="form-label"
+                    >long_description <span style="color: #ef4444">*</span>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <circle cx="12" cy="12" r="10"></circle>
+                      <path d="M12 16v-4M12 8h.01"></path></svg
+                  ></label>
+                  <select class="form-select">
+                    <option>Mô tả chi tiết</option>
+                    <option>Tên sản phẩm</option>
+                    <option>Ảnh sản phẩm</option>
+                    <option>Danh mục sản phẩm</option>
+                    <option>Mô tả ngắn</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <!-- Actions -->
+            <div style="display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center">
+              <button class="btn btn-outline">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path
+                    d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"
+                  ></path>
+                </svg>
+                Auto Map
+              </button>
+              <button class="btn btn-primary">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+                  <polyline points="17 21 17 13 7 13 7 21"></polyline>
+                  <polyline points="7 3 7 8 15 8"></polyline>
+                </svg>
+                Save Mapping
+              </button>
+              <button class="btn btn-outline">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+                  <path d="M3 3v5h5"></path>
+                </svg>
+                Reset Mapping
+              </button>
+              <button class="btn btn-outline">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"></path>
+                  <circle cx="12" cy="12" r="3"></circle>
+                </svg>
+                Preview Mapping
+              </button>
+            </div>
+          </div>
+
+          <!-- ====== LOG SECTION ====== -->
+          <div id="section-log" class="section log-section" style="height: calc(100vh - 3.5rem - 3rem)">
+            <!-- Header -->
+            <div style="display: flex; align-items: center; justify-content: space-between; flex-shrink: 0">
+              <div>
+                <h2 style="font-size: 1rem; font-weight: 600">Realtime Log</h2>
+                <p style="font-size: 0.875rem; color: #6b7280; margin-top: 2px">Live output from the bot execution</p>
+              </div>
+              <div style="display: flex; gap: 0.5rem">
+                <button class="btn btn-outline" style="font-size: 0.75rem; padding: 0.3rem 0.7rem" onclick="copyLogs()">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect>
+                    <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path>
+                  </svg>
+                  Copy Log
+                </button>
+                <button
+                  class="btn btn-outline"
+                  style="font-size: 0.75rem; padding: 0.3rem 0.7rem"
+                  onclick="downloadLogs()"
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="7 10 12 15 17 10"></polyline>
+                    <line x1="12" y1="15" x2="12" y2="3"></line>
+                  </svg>
+                  Download
+                </button>
+                <button class="btn btn-danger" style="font-size: 0.75rem; padding: 0.3rem 0.7rem" onclick="clearLogs()">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="3 6 5 6 21 6"></polyline>
+                    <path d="m19 6-.867 12.142A2 2 0 0 1 16.138 20H7.862a2 2 0 0 1-1.995-1.858L5 6"></path>
+                    <path d="M10 11v6M14 11v6"></path>
+                    <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>
+                  </svg>
+                  Clear
+                </button>
+              </div>
+            </div>
+
+            <!-- Filter Tabs -->
+            <div
+              style="
+                background: #f3f4f6;
+                border-radius: 0.5rem;
+                padding: 0.25rem;
+                display: flex;
+                gap: 2px;
+                width: fit-content;
+                flex-shrink: 0;
+              "
+            >
+              <button class="filter-tab active" onclick="setLogFilter('ALL', this)">All</button>
+              <button class="filter-tab" onclick="setLogFilter('INFO', this)">Info</button>
+              <button class="filter-tab" onclick="setLogFilter('SUCCESS', this)">Success</button>
+              <button class="filter-tab" onclick="setLogFilter('WARNING', this)">Warning</button>
+              <button class="filter-tab" onclick="setLogFilter('ERROR', this)">Error</button>
+            </div>
+
+            <!-- Log Area -->
+            <div
+              id="log-area"
+              style="
+                flex: 1;
+                min-height: 0;
+                overflow-y: auto;
+                background: rgba(249, 250, 251, 0.8);
+                border: 1px solid #e5e7eb;
+                border-radius: 0.75rem;
+                padding: 0.75rem;
+              "
+            >
+              <!-- populated by JS -->
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <script>
+      // ---- Navigation ----
+      function switchSection(id, btn) {
+        document.querySelectorAll(".section").forEach((el) => el.classList.remove("active"));
+        document.querySelectorAll(".nav-btn").forEach((el) => el.classList.remove("active"));
+        document.getElementById("section-" + id).classList.add("active");
+        btn.classList.add("active");
+      }
+
+      // ---- Upload ----
+      function handleFileChange(input) {
+        if (input.files && input.files[0]) {
+          document.getElementById("file-name").textContent = input.files[0].name;
+        }
+      }
+      function handleUpload() {
+        alert("File uploaded successfully!");
+      }
+
+      // ---- Batch ----
+      let isRunning = true;
+      function toggleRun(start) {
+        isRunning = start;
+        document.getElementById("run-btn").disabled = start;
+        document.getElementById("stop-btn").disabled = !start;
+        const badge = document.getElementById("batch-status-badge");
+        if (start) {
+          badge.innerHTML = `<span style="width:0.375rem;height:0.375rem;border-radius:50%;background:var(--warning);" class="pulse"></span> Running`;
+          badge.className = "badge badge-warning";
+        } else {
+          badge.innerHTML = `<span style="width:0.375rem;height:0.375rem;border-radius:50%;background:#9ca3af;"></span> Stopped`;
+          badge.className = "badge";
+          badge.style.cssText =
+            "background:#f3f4f6; color:#6b7280; display:inline-flex; align-items:center; gap:0.375rem; border-radius:9999px; padding:0.25rem 0.75rem; font-size:0.75rem; font-weight:600;";
+        }
+      }
+      // init
+      document.getElementById("run-btn").disabled = true;
+
+      // ---- Log ----
+      const logData = [
+        { time: "2026-06-12 14:53:34", level: "INFO", msg: "Waiting for video generation to finish..." },
+        { time: "2026-06-12 14:53:47", level: "INFO", msg: "Waiting for video generation to finish... (13s elapsed)" },
+        { time: "2026-06-12 14:54:01", level: "INFO", msg: "Waiting for video generation to finish... (27s elapsed)" },
+        { time: "2026-06-12 14:54:15", level: "INFO", msg: "Waiting for video generation to finish... (41s elapsed)" },
+        { time: "2026-06-12 14:54:30", level: "INFO", msg: "Waiting for video generation to finish... (55s elapsed)" },
+        { time: "2026-06-12 14:54:36", level: "SUCCESS", msg: "Clicked create next product." },
+        { time: "2026-06-12 14:54:36", level: "INFO", msg: "Waiting for Step 1 to reload..." },
+        { time: "2026-06-12 14:54:37", level: "SUCCESS", msg: "Step 1 is ready for next product." },
+        {
+          time: "2026-06-12 14:54:37",
+          level: "SUCCESS",
+          msg: "Completed product 10: Chăm Sóc Thú Cưng > Vệ sinh cho thú cưng > Khay & Bồn vệ sinh cho mèo",
+        },
+        {
+          time: "2026-06-12 14:54:38",
+          level: "INFO",
+          msg: "Running product 11/12: Chăm Sóc Thú Cưng > Vệ sinh cho thú cưng > Khay & Bồn vệ sinh cho mèo",
+        },
+        { time: "2026-06-12 14:54:39", level: "SUCCESS", msg: "Tool frame ready: <srcdoc>" },
+        { time: "2026-06-12 14:54:40", level: "INFO", msg: "Filled product_name" },
+        { time: "2026-06-12 14:54:40", level: "INFO", msg: "Filled short description" },
+        { time: "2026-06-12 14:54:41", level: "WARNING", msg: "Slow Mo delay applied: 400ms" },
+        { time: "2026-06-12 14:54:42", level: "SUCCESS", msg: "Brainstorm completed successfully" },
+        { time: "2026-06-12 14:54:43", level: "ERROR", msg: "Failed to load image. Retrying..." },
+        { time: "2026-06-12 14:54:45", level: "INFO", msg: "Retry successful. Proceeding..." },
+      ];
+
+      let logFilter = "ALL";
+      let currentLogs = [...logData];
+
+      function renderLogs() {
+        const area = document.getElementById("log-area");
+        const items = logFilter === "ALL" ? currentLogs : currentLogs.filter((l) => l.level === logFilter);
+        if (!items.length) {
+          area.innerHTML =
+            '<div style="display:flex;height:100%;align-items:center;justify-content:center;color:#9ca3af;font-size:0.875rem;">No log entries</div>';
+          return;
+        }
+        area.innerHTML = items
+          .map(
+            (l) => `
+      <div class="log-line">
+        <span class="log-time">[${l.time}]</span>
+        <span class="log-badge log-badge-${l.level}">${l.level}</span>
+        <span class="log-msg">${l.msg}</span>
+      </div>
+    `,
+          )
+          .join("");
+        area.scrollTop = area.scrollHeight;
+      }
+
+      function setLogFilter(f, btn) {
+        logFilter = f;
+        document.querySelectorAll(".filter-tab").forEach((el) => el.classList.remove("active"));
+        btn.classList.add("active");
+        renderLogs();
+      }
+
+      function copyLogs() {
+        const items = logFilter === "ALL" ? currentLogs : currentLogs.filter((l) => l.level === logFilter);
+        const text = items.map((l) => `[${l.time}] [${l.level}] ${l.msg}`).join("\n");
+        navigator.clipboard.writeText(text).then(() => alert("Copied!"));
+      }
+
+      function downloadLogs() {
+        const items = logFilter === "ALL" ? currentLogs : currentLogs.filter((l) => l.level === logFilter);
+        const text = items.map((l) => `[${l.time}] [${l.level}] ${l.msg}`).join("\n");
+        const a = document.createElement("a");
+        a.href = "data:text/plain;charset=utf-8," + encodeURIComponent(text);
+        a.download = "bot-log.html";
+        a.click();
+      }
+
+      function clearLogs() {
+        currentLogs = [];
+        renderLogs();
+      }
+
+      renderLogs();
+    </script>
+    <a id="enter-badge" target="_blank" href="https://enter.converge.ai/">
+      <div class="build-with-container">
+        <div class="content-wrapper">
+          <span class="build-with">Build with</span>
+          <img
+            class="favicon"
+            src="
+data:image/vnd.microsoft.icon;base64,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/P+IYfz/h2D8/4Vf/P+EXv3+gV38/4Fc/f6AW/z+fVv8/nta/P55Wfz+d1f7/3ZX+/90Vvz+clX8/nFV+/emb//+o27+/6Jt//6gbP/+nmv//pxq/f+aaf3/mGn9/5do/f+WZ/7+lGb+/pJl/v6PZP3/jWP8/4xj/P+KYvz/iWD9/oZg/P+FX/z/g178/4Jd/P6BXPz+flz9/n1a+/97Wfz+eVn7/3dY+/92V/z+dFb7/nJV+v9wVPv+b1P7+KNu/v+hbf7/oGz//p5r/v+dav7+mmn9/5hp/f+WaP3/lWf9/5Rm/v6RZf3/s5b9/8q2/f/Hs/3/jWb8/4hg/P+GYPz/hV/8/4Ne/P+Ma/z/p4/8/4Jf/P58Wvv/e1r7/3lY+/93WPv/dVf8/nRW+/5yVfr/cFT7/m5T+v9tUvr4om3//p9s/v+ea/7+nGr9/5pp/f+Yaf3/lmf9/5Rn/f+TZv3/kWX9/5Bk/v61mf7+//////////+pjP3/hmD8/4Vf/f6DXvz/gV38/7Oe/f//////7Of+/7em/f+GaPz+d1j8/nVX/P5zVvr/cVX6/3BU+v9uU/r/bFL7/mtR+vifbP7/nWv+/5xq/v+aaf3/mGj9/5Zo/f+UZ/3/k2b+/pFl/f+PZP3/jmP9/pNs/f749f///////9LD/v+EX/z/g178/4Fd/P+AXPv/vaz9//r5//////////////j2///Jvf3/kHj7/3JW+/9vVPv+blP6/2xS+/5qUfr/aVD6+J5r//6bav3/mmn+/plo/v6XZ/7+lWb+/pNm/f+SZf7+kGT9/o5j/f6MYv3+iWH8/9TG/v//////9vP//4hl/P+BXfz+gVz9/n5b/P58Wvz+h2r7/7Wk/f/o4/7//v7////////9/f//3db+/6CO+/9wV/v+alH7/mhQ+v9nT/r4m2r+/5pp/v6Zaf7+lmf9/5Vm/v6TZv7+kWX9/pBk/v6NY/3/jGL9/oph/f6IYP3+q5D+/v//////////qJD9/4Bc/P5+W/v/fFr7/3pZ+/94WPz+dlf7/3ZZ/P6WgPz/zMP9//n4/////////////6ia/f5oUPv+Zk/6/2VO+viaaf7+l2j9/5Zn/f+UZv3/k2X+/pFk/v6PZP3/jmP9/oxi/f6KYf3+iGD9/odf/f6JZfz/8/D////////UyP7/fVv8/nxa/P56Wfz+eFj8/nZX+/90Vvv/clX8/nlf+/6ol/3+6OP+////////////qJv9/mZP+/5lTvr/Y076+Jho/v6VZ/3/lGb9/5Jl/f+RZf7+j2P+/o1j/f+MYv3+imH9/odg/P+FX/z/hF78/4Jd/P/Mvv7///////j2//+FZfz+eln8/nhY+/92V/v/dlj8/pB5/P/Guv3/9PL+////////////9fT//8C2/f95Zfv+ZE76/2NN+f9hTfn4lmf+/pRm/f+SZv3/kWX+/o9k/v6MYvz/i2L8/4ph/f6IYP3+hl/9/oRe/f6DXf3+gFz8/6GH/f7//v///////6iT/P94WPz+dlf7/6KN/P/i3P7//v7////////+/v//5+P+/6qc/f5zXfr/Zk/7/mRO+v9iTfr+YUz6/mBM+fiVZv7+kWX9/5Fk/v6OY/3/jGP8/4ti/P+JYfz/h2D8/4Vf/P+EXv3+gl38/4Fc/P6AXPz+gV78/u/q/v//////187+/3ZX/P50Vvv/uKn9/v/////8+///08v9/5SC+/9sU/v+aFD6/2ZP+v9kTvr/Yk36/mBM+v5eS/r+Xkv5+JJl/v6RZP3+j2P+/o1j/f6KYvz/iGH8/4hg/f6GX/3+hF79/oJd/f6AXPz/gFz9/n1b+/97Wvz+xLX9///////6+P//gWX8/nJV+/+Hbvv+vbH9/4Js+v9sUvr/aVD7/mdQ+/5mT/v+ZE77/mJN+v5gTPr+Xkv5/11K+f9bSvr3kGT+/o5j/f6NYv3+i2H9/ohh/P+IYP3+hV/8/4Re/f6BXfz/g2D9/qOK/P/Zz/7/lXn9/nlZ/P6UfPz//v7///////+qmf3+cFT6/25T+/5tUvv+a1L7/mlR+/5nUPr/Zk/7/mRO+f9iTfn/YEz5/15L+v5dS/n/W0n5/1lJ+fiOY/3/jGL8/4pi/P+JYf3+hmD8/4Zf/f6EXv3+jGn9/rej/f/q5f7///////////+/sP3/d1j7/3dZ+//p5f7//////9rT/v9vVPv+bVL7/mtR+v9pUPr/Z1D6/2VP+/5kTvr/Yk36/mBM+f9eS/n/XEr5/1tK+v5ZSfn/V0j5+Ixi/f+KYfz/iGH8/4df/f6FX/z/mnz8/8u9/v/39f/////////////5+P//0Mb+/5Z++/91V/v/c1b8/rqt/f//////+/v//31m+v9rUfv+aVH6/2dP+/5lT/r/Y076/2JN+f9gTPn/Xkv5/1xK+f9bSfr+WUj5/1dI+v5WR/n3imH8/4lh/f6GX/z/nX/8/9/V/v/9/f////////7+///q5P7/t6X+/oZp/P53V/z+dVf8/nNW+/9yVfv+iHH7//39////////q538/2lQ+/5nT/r/ZU76/mNO+v5hTfn/YEz5/15L+f9cSvr+W0r5/1hI+v5XSPr+VUf6/lNG+PiIYPz/hmD8/4Vf/f66pv3////////////j3P7/nob9/n1c+/94WPz+d1f8/nVW/P5zVvv/clX6/3BU+/5vVPv+5N7+///////d2P7/Z1D7/mVO+v9jTvr/YU36/l9M+f9eS/r+XEr6/lpJ+v5YSPn/V0f5/1VH+f5TRvj/UUX4+IZf/P+EXvz/g179/rOe/P/+/f////////79///g2P7/q5f8/35g+/91Vvz+c1X7/3FV+v9wVPv+blP7/mxS+v+vovz///////38//96Z/v+Y077/mFN+f9fTPn/Xkv5/1xK+f9aSfn/WEj6/ldH+f9VRvn+U0X4/1FF+f5PRPj4hV79/oNd/f6AXfz/gV38/ph9/P/Nwf7/+ff/////////////9PH+/8S4/f+Ndvv/cFX7/m5T+/5sUvr/alH7/n1o+v/8/P///////6yh/P9hTfr+X0z6/l1L+f9cSvr+Wkn5/1hI+f9WR/r+VEb5/1NF+P9RRfj/T0T5/k5D+PiDXf3+gFz8/39c+/99W/v/fFr8/npZ/P6EaPv/t6f9/+zp/v////////////39//+7r/3/bFL6/2pR+v9oUPr/Z1D6/9vV/f//////4d7+/2BN+f9dSvr+XEr6/lpJ+v5YSPn/Vkf5/lRG+f5SRfn+UEX4/09E+f5NQ/j/TEL4+IBc/P+AW/z+fVv7/3ta+/96Wfv/eFj7/3ZX+/90Vvv/dlr6/56L/P/Z0v7//fz//56N+/9qUfr/aFD6/2ZP+v9kTvr/pJj7///////9/f//eWr7/ltK+f9ZSfr+WEj6/lZH+f9URvn+UkX4/1FF+P9PRPj/TUP4/0tC+P9KQvj4f1z7/31b+/98Wvz+eln8/ndY/P52V/v/dFb8/nJV+/9xVPv+b1T6/25T+/6FcPv/cFn7/mhQ+v9mT/v+ZE75/2JN+v5vXfr+uLD8/7iw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/f+KYfz/imH9/ohg/P+GYPz/hV/8/4Re/P+EXf3+g139/oJd/f6AXPz/f1z8/35b/P58Wvz+e1r7/3pZ+/95WPz+eFj7/3dX/P51Vvz+dFf786px/v+pcf7/qHD+/6Zw/v+lb/7/pG/+/6Nu/v+jbf/+oW3//qBs//6fa//+nWv+/5xq/v6bav7/m2r+/pho/f+YaP7+l2f+/pVm/v6UZv7+k2b+/pJl/v6QZP3/kGT+/o1j/f+MY/z/i2L8/4th/f6JYf3+iWD9/oZg/P+FX/z/hF78/4Je/P+BXfz/gV38/4Fc/f6AW/z+flv8/nxa+/97Wvz+eln8/nhY/P54WPz+d1j7/3VX+/90Vvv/c1b786lx/v+ocP7/pm/+/6Vv/v+lbv/+pG7//qJt/v+ibf/+oGz//p9r//6ea//+nGr+/5xp/v6aaf7+mGj9/5do/f+WZ/3/lGf9/5Nm/f+TZf7+kGX9/5Fk/f6QZP7+jWP8/41j/f6LYvz/imH8/4lh/P+IYPz/h1/9/oVf/P+FX/3+g139/oFd/P+BXfz/f1z8/35b/P5+W/z+fFr7/3ta+/96Wfz+eFj8/ndY+/93V/z+dVb7/3RW/P5zVfv/cVX786hw/v+nb//+pW/+/6Ru/v+jbv/+oW3+/6Bt/v+gbP/+nmv+/55r//6bav3/mmn9/5tp/v6ZaP7+l2j9/5Zn/f+VZv7+lGb+/pNm/f+RZf3/kGT9/49k/f+NY/3/jGP9/4ti/P+KYfz/iGH8/4dg/P+GYPz/hV/8/4Ve/f6DXv3+gl39/oFd/f6AXP3+gFv9/n5b/P58Wvv/e1n8/npZ+/94WPz+d1f7/3dX+/91V/v/dFb7/nNW+/9xVfv+cVX786dv//6mb//+pW7//qJt/v+ibf/+oWz//p9s//6fa//+nWv+/5tq/v+aaf3/mWn9/5ho/f+YaP7+l2f+/pVm/v6UZv7+k2X+/pJl/v6QZP3/j2T9/41j/f+MY/3/i2L8/4lh/P+IYfz/h2D8/4Zf/P+FX/z/hF/8/4Je/P+CXf3+gFz7/4Bc/P5+W/z+flv7/3xa+/97Wvv/eln7/3hY/P53WPz+dlf8/nVX+/90Vvv+c1X7/3FV+/5wVPv+b1T786Zv//6kbv7/om3+/6Jt//6hbf/+oGz//p5r/v+da/7/m2r9/5pp/f+Zaf3/l2j9/5do/v+XZ/7+lGb9/5Rm/v6TZf7+kGX9/49k/P+PZP7+jGP8/4xi/P+LYvz/iWH8/4lg/f6HYPz/hl/9/oVf/P+EXvz/gl38/4Jd/P6BXPz+gFv8/n9c/P99W/v/fFr7/3tZ/P56Wfv/eFj7/3dX+/92V/v/dVb7/3RW+/9yVfv+cVX6/3BU+/5vVPr/blP786Rv/v+ibf7/oW3+/6Ft//6ebP7/n2v+/p5r//6bav7/mmn9/5lp/f+ZaP7+l2j9/5Zn/f+VZv7+lGb+/pJl/f+Va/3/qon9/62O/P+sjv3/qov9/o1l/f6JYfz/iGD8/4dg/P+GX/3+hV/8/4Re/P+CXvz/iWf8/5R1/f6FY/v/flz8/n1b+/98Wvv/e1r7/3pZ/P54WPv/d1j8/nZX/P50Vvv/dFb7/3JV+v9xVfz+cFT7/m9U+v9tU/v+bVP786Jt/v+hbf7/oGz+/59s//6ea/7/nWv+/5xq//6aaf7/mWn+/5ho/v6WaP3/lWf9/5Rm/f+UZv7+kmX9/5Fk/v6Xbf7+4dX+//r5/v/6+f7/+PX+/6OD/P+IYPz/h2D8/4Zf/P+EX/z/hF78/4Jd/P+BXfz/s579/u7p/v/Kvf3/pY78/4Zn+/97Wvz+eln7/3hY+/93WPz+dlf7/3VW/P5zVvv+clX7/nFV+v9wVPv+b1P7/m1T+v9sUvv+bFL786Jt//6gbP7/nmz+/55r/v+da/7+nGr+/ppp/f+Zaf3/l2j9/5Zn/f+VZ/3/lGb9/5Nm/f+SZf3/kGT9/49k/f+PZP3+wav+/////////////////8q3/f+IYP3+hV/8/4Ze/f6EXvz/gl38/4Fd/P+EYvz/29L9///////+/f//9vT//+Lb/v+xnv3/hGb8/ndY+/92V/z+dFb8/nNW+/9yVfv+cVX6/3BU+/9vU/v+bVL7/2xS+/5rUfv+alL686Bs/v+ea/7/nWv+/5xr/v+bav3/m2n+/plp/f+XaP3/lmj9/5Vn/f+UZv3/k2b+/pJl/f+QZf3/j2T9/45k/f+MY/z/nnr9/vj2/////////////+jh/v+Rb/z/hF/8/4Ne/P+CXfz/gV38/4Bc+/+Rc/v/5t/+//z8///////////////////+/f//7er+/7io/P+Mc/v/el37/nJV+v9xVPv/b1T7/m9T+/9tUvv+bFL6/2tR+/9qUfr/aVH6855r/v+da/7/nGr9/5tq/v+Zaf3/mWn9/5ho/v6XZ/7+lmf+/pRm/f+UZv7+kmX+/pBk/f+PZP3/jmP9/41i/f6MYv3+jGP9/trO/v////////////f0//+pj/3/g178/4Nd/P6CXf3+gFz8/39b+/+CYfv/m4H8/72s/f/e1v7/+ff///////////////////39///t6f7/yr/+/6GP/P9+Zfv/b1T6/21T+v9sUvv+a1H7/mlR+v9oUPr/aFD6855r//6dav7+mmr9/5pp/v6aaf7+mGj+/pZn/f+WZ/7+lGb+/pJm/f+TZf7+kGT9/5Bk/f6PZP3+jWL9/oti/P+LYv3+iGH8/6+W/f/8/P////////39///Fs/3/hGH8/4Fd/P6BXPz+f1v8/35b/P58Wvz+e1n7/31c/P6Fafv/m4X8/83C/f/08v////7//////////////v7///f1///h2/7/r6D8/3hg+/9rUvv+aVH6/2hQ+v9nUPr/Z1D685xr/v+aaf3/mmn+/ppp/v6XaP3/l2f+/pZn/v6UZv3/k2X+/pJl/f6QZP7+j2T9/45k/f+MYv3/jGL9/oph/P+JYf3+iWD9/pd0/f7s5v7////////////g1/7/i2z8/4Bc/P+AW/z+flv7/31a+/97Wvv/eln8/3lZ+/93WPz+dlf7/3dZ+/+JcPv/u638/+Xh/v/39f///v7//////////////v7//83E/f9rU/v+aFD6/2dQ+v9mT/r/Zk/685tp/v6aaf7+mGn9/5ho/v6WZ/3/lWf9/5Rm/v6TZv7+kmX+/pBk/f6QZP3+jmP9/41i/f6MYv3+imL8/4ph/f6IYP3+h2D9/oxn/f7Rw/7//v7////////29P//nYP8/35b+/9+W/z+fVr7/3ta+/96Wfz+eVn8/ndY/P52V/v/dVf7/3NW/P5zVvz+c1b7/4Jp/P6xo/z/8e/+/////////////////9DJ/f9qUvv+Z1D7/mVP+v9kTvr/ZE/685lp/f+ZaP7+lmj9/5Zn/f+VZ/3/k2b9/5Nl/v6SZf7+kGT+/o9k/f+PY/7+jWP9/oxi/f6LYf3+iWH9/odg/P+HYP3+hV/8/4Vf/P+znP3/+fj////////+/v//xbX9/31b/P58Wvz+e1n7/3pZ/P55WPz+d1f8/nZX+/91V/v/dFb7/3NV/P5yVvv+hm78/rqt/f/m4f7/+/r//////////////////8/I/f9pUvv+ZU77/mVO+v9jTvr/Y07685lp/v6WaP3/lWf9/5Vn/f+TZv3/kmX9/5Fl/f+QZP7+j2P+/o5j/f+NY/3+jGL9/oth/f6IYPz/h2D8/4Zg/P+GX/3+hF78/4Re/f6XePz/7+n/////////////7un+/4Vl/P57Wfz+eln8/nlY+/93WPz+dlf7/3VX/P53Wvv/gGb7/5mE/f7Mwv3/9fP///////////////////39///z8v//3Nf9/5qL+/9mUPv+ZU76/2NO+f9iTfn/Yk7585do/v6VZ/3/lWf9/5Nm/f+SZv3/kWX9/5Bk/v6OZP3/jWP8/4xj/f+LYvz/i2H9/olg/f6IYP3+h2D9/oVe/f6FXv3+g178/4Fd/P+EYvz/1cn+/////////////f3//6SN/P96Wfz+eVn7/3dY+/92V/v/e177/5Z//P+6q/3/3db+//n4///+/v/////////////8/P//5+P+/8C2/f+UhPv/cVv6/2ZP+/5kTvr+Y075/2JN+v5hTPn/X03685Zn/v6VZ/3/lGb+/pNl/v6RZf3/kGT9/o5k/f+OY/3+jGL9/4ti/P+KYf3+iGD8/4hg/f6HX/3+hV/9/oRe/P+DXv3+gV38/4Fc/P6AXPz/q5P9/v7+/////////////9HF/f98XPz+d1f7/3ZX+/+Ga/v/08n+//Lv///8+////////////////////v3//+bh/v+rnPz/gGr7/m5X+v9nUPr/ZU/6/2RO+v9jTvr+YUz5/2BM+v5gTPr+Xkz585Rn/f+UZv7+kWX9/5Jl/v6PZP3/jmP9/45j/f6MYvz/i2L8/4lh/P+IYPz/h1/8/4Zf/P+EXvz/hF79/oJd/P+CXf3+gVz9/oFc/P5+W/v/hWP8/u7q/v///////////+3q/v+Ncv3+dlf7/3VW+/+AZPz+4939/////////////f3///Px///X0f7/n4/8/3BY+v9pUPr/Z1D6/2dP+v5lT/r/ZE76/2NO+v5hTPr+YEz6/l9M+v5eS/n/XUz585Rm/v6SZf7+kmX9/o9k/f+PY/3+jWP9/4ti/f+KYvz/iWH8/4lg/f6IYP3+h1/9/oVe/f6EXv3+g139/oFd/P+BXP3+gFz8/n5b+/99W/v/fFv8/sOz/f////////////n3//+rmP3+dVj8/nNW+/9zVvv+va/+/vz7///l4P7/vrL8/5WC+/91Xfv+alH6/2hQ+/5oUPv+Z0/6/2VO+v9kTvr/Y076/2FM+v5gTPr+X0z6/l5L+f9dS/n/XEv585Fl/f+RZf7+kGT9/o9j/v6NY/z/jGL9/oph/P+KYf3+iGD8/4dg/P+HX/3+hF78/4Re/f6DXf3+gV38/4Bc+/+AXP3+flz8/31b+/98Wvv/eln8/pqB/P/39f////////7+///IvP3/eV38/nJV+/9xVfr/hm77/qaW/P+Bavv+cVf6/2tS+v9qUfr/aFD6/mdP+/5mT/v+ZU76/2RO+v9jTvr+YUz6/mBM+f9fTPn/Xkv5/11K+f9bSvr+Wkv585Fk/v6QZP3+jmP9/41j/P+MYv3+i2H9/olh/P+JYP3+h2D8/4Zf/P+FX/3+hF79/oNd/P6BXf3+gV78/4lo+/+fhfz/z8L9/5mA/f56Wfz+eVn7/4Vo/P7g2P7////////////n4v7/hGr8/nFV+/9vU/v+blP7/m1T+v9sUvv+a1L6/2pR+/5oUPv+Z1D6/2ZP+/5lTvr/ZE76/mNO+f9hTfr+YE35/19M+v5dS/r+XUr5/1tK+f9aSfn/WUn585Bk/v6OY/3+jmP9/oxi/f6KYfz/iWH8/4dg/P+GYPz/h1/9/oRe/P+EXv3+g179/oJf/P+VePz/t6P+/trP/v/29P////7//8e5/f97W/v/eFj8/npc+/++sP3//fz////////6+f//n4z8/29U+v9uU/r/blP7/mxS+/5rUvv+alH6/2hQ+/5nUPv+Zk/7/mVO+v9kTvn/Yk36/mFN+f9gTPn/X0v5/11L+f9dS/n/XEr6/lpJ+f9ZSfr+WEj6845j/f+NY/z/i2L8/4ti/f6JYfz/iGD9/oZg/P+FX/z/hV79/oRe/f6EYP3+mnz9/8q7/f/t6P//+/n//////////////////+ji/v+Fafv/dlf8/nVX+/6eifz/9fP/////////////z8X9/29V+/5tU/v+bFL7/mtR+v9qUfr/aFD6/2dP+v9mT/r/ZU77/mRO+v9iTfv+YUz6/mBM+f9fTPn/XUv5/1xK+v5bSvn/Wkn6/llJ+f9YSPn/V0f5841i/f+LYvz/imH8/4lh/P+HYPz/hl/8/4df/f6GYfz/jmv9/qSJ/f/Ux/7/+ff///////////////////7+///49v//6OL+/72v/P+CZvv/dVf7/3RW+/+CZ/z+5uH+////////////9vT+/35n+/5rUfr/a1H6/2lR+v9oUPv+Z0/6/2ZP+v9lTvr/ZE76/2JN+v9hTPr+YEz5/19L+f9dSvn/XEr5/1tJ+v5aSfn/WUj5/lhI+f9WR/n+Vkf584ti/f+KYfz/imH9/odg/P+GX/z/h2L8/5t8/f+7p/3/3tX+//n3///////////////////9/P//7un//8zA/f+olPz/iGv9/ndY+/91Vvv/dFb7/3JV/P5zV/r/vbH9/////////////v7//6uc/P9rUfr/aVH7/mhQ+v9nT/r/Zk/7/mRO+v5jTvn/Yk35/2FM+f9gTPn/X0v5/11K+v5cSvn/XEr5/1pJ+v5ZSPr+WEj5/1ZH+v5VRvn+VUf584ph/P+KYf3+h2D8/4Zf/P+HYfz/wrD9//Dr///7+v///////////////////v3//+ji/v+2o/3/kHP9/n5g/P54Wfz+dlf7/3VX+/50Vvv/clX7/3FV+/5xVPv+jHf7//v5/////////////9rU/v9xWvr/aFD7/mdP+v9mT/r/ZE75/2NO+f9iTfn/YEz5/2BM+v9fS/n/XUr5/1xK+v5bSvn/Wkn5/1lI+f9XSPn+Vkf6/lVH+f9URvn+U0b584lh/P+HYPz/hl/8/4Vf/P+IY/3+29H+//////////////////n3///Yzv7/pY78/4Fh/P96Wfv/eFj7/3hY/P52V/z+dVb8/nRW+/9yVfv/clX6/3FU+/9vU/v+cVf7/9/Y/v////////////Du/v+LePz+Zk/6/2ZP+v9kTvr/Y076/2JN+v5hTPn/X0z6/l5L+f9dSvr+XEr5/1tK+v5ZSfn/WUj5/1dI+v5WR/n/VUf5/lRG+P9SRfj/UkX584dg/P+GYPz/hV/8/4Re/f6FYvz/2tD+//////////////////Ht/v+/r/3/mHz9/n5f/P54WPz+d1j8/nZX/P51Vvz+dFb8/nJV+/9xVfr/cFT6/29T+/5uU/r/bVL7/qqb/P/9/P////////v6//+toP3+aFH7/mRO+v9jTvr/Yk36/2FN+v5fS/r+Xkv5/11K+f9cSvn/W0n5/1lJ+v5YSPn/V0f5/1ZH+P9VRvn/VEb4/1JF+f5RRfj/UEX584Zf/P+FX/z/g178/4Nd/f6EYP3+yrv9//z7///////////////////7+v//8e7//9TK/f+hi/z/fF77/3VW+/90Vvv/clX7/3FV+v9wVPr/b1P7/m1T+/5tU/r/a1H6/4Ju+//u6/7////////////Nxv3/bln6/mNN+/5iTfr/YEz6/l9M+f9eS/n/XUr5/1xK+v5bSvn/WUj5/1hI+v5XSPn/Vkf5/lRG+f5URvn+UkX4/1FF+P9QRPj/T0T484Vf/P+EXv3+g139/oFd/P+AXPv/g1/8/p2D/P/Rxf7/8Oz///z7///////////////////8/P//5N7+/6+e/f6JcPv/eFz8/nBV+/5uU/v+blP6/21S+v9rUfr/alH7/nJc+/7Ox/3////////////t6/7/fWz6/2JN+v5gTPr+X0z5/15L+f9cSvr+XEr5/1tJ+f9ZSfn/WEj6/ldI+f9VR/r+VEb5/1RG+P9SRfj/UUT5/lBE+f5PQ/n+TkP484Ne/P+DXf3+gV38/4Fc/P5/XPv/flv8/31b/P6AYPv/lXv8/7mo/f/e1v7/+fj///////////////////39///r5/7/yb79/6GQ/f51W/v+bFL6/2tR+v9qUfr/aVD7/mlS+v+rnvz/+vr////////9/P//ppr8/2BM+f9fTPr+Xkv6/l1K+f9cSvn/W0n5/1lJ+f9YSPn/V0j5/1VH+f5URvn+U0b4/1JF+f5RRfn+UET4/05D+f5NQ/n+TUL484Nd/P6CXf3+gFz8/39b+/9+W/v/fVr7/3ta/P57Wvz+eVj8/npb+/+EaPv/non9/tPL/f/59////////////////////v7//+Pe/v97ZPv+a1L6/2pR+/5oUPr/Z0/6/2ZP+v6FdPv/7+3+////////////3Nj+/2JP+v9eS/r+XEr5/1xK+f9aSfr+WUj6/lhI+f9XR/n/VUf5/lVG+v5TRvn+UkX5/lBE+P9PRPn+TkP5/k1D+P9MQvn+TEL484Bd/P+BXPz+gFv8/n5b+/98Wvz+e1r7/3tZ+/95Wfv/eFj7/3dY+/91V/v/dFb7/3VY+/6Revv/yL79/+7r/v/6+v///////8rB/f9tVPr/alH6/2lQ+v9nUPr/Zk/7/mVP+v9rVvn/1c/9////////////+fn//39w+/9cSvr+W0r5/1pJ+f9YSPr+V0j6/ldH+f9VR/r+VEb5/lNG+v5SRfj/UUX5/lBE+P9OQ/n+TUP4/0xC+P9KQfj/S0L484Bc+/9/W/v/flv8/nxa/P57Wvz+eln7/3hZ/P54WPv/dlf7/3VX+/90Vvz+c1b7/3FV+/9xVfr/c1j6/4hx/P6vofz/19D9/5aE+/9qUfr/aVD7/mdQ+/5mT/v+ZU76/2NO+v9iTvr+pJj8/vr5/v/6+v7/+vr+/7Cn/P9dTPr+Wkn6/llI+v5YSPn+V0f5/lVH+f9URvr+U0b5/lJF+P9RRPj/UET4/05D+f5NQ/n+TEL5/kpB+P9JQfj/SEH484Bc/P5+W/z/fVr7/3xa/P56Wfz+eVj7/3dY/P53V/z+dVf7/3RW+/5zVfz+clX7/3FU+/5wVPr/blP6/21S+/5uVfv+dl/6/21V+/5oUPr/Z0/6/2ZP+/5lT/r/Y035/2NN+v5hTfr+bFn6/o+C+/+Pg/v/j4L8/n9y+v9cS/r+WUj5/1hI+f9XR/n/VUb5/1RG+f9TRfn+UUX5/lBE+f5PRPj/TkP5/kxC+f5MQvn+SkH4/0pB+P9IQPn+R0D4835b+/98Wvv/e1n8/npZ+/95WPz+eFj7/3dX/P51Vvv/dFb7/3NW/P5yVfv/cFT6/29U+v9uU/r/bVP6/2xS+v9rUfv+alH7/mhQ+v9nUPr/Zk/6/2VO+/5jTvr/Yk36/mFN+f9gTPr+X0v5/15L+f9cSvr+W0n6/lpJ+f9ZSPn/V0j5/1ZH+v5VRvn/VEb5/1NG+f9RRfn+UET5/k9E+f5OQ/j/TUL5/kxC+f5KQfn+SUH5/khA+P9HP/j/RkD483xa/P57Wvv/eln7/3hY/P54WPz+d1f8/nVW+/90Vvz+c1b6/3FV+/5wVPv+b1T7/25T+/5tUvr/bFL6/2pR+/5pUfr/aFD6/2dP+v5mT/v+ZU77/mNO+v9iTfn/YU35/2BM+f9fS/n/Xkv6/lxK+f9bSvn/Wkn6/lhI+f9XSPn/Vkf5/1VG+f9URvn/U0X4/1FF+P9QRPn+T0T5/k5D+P9NQvn+TEL5/kpB+f5JQfj+SED4/0Y/+P9FP/f/RT/483tZ+/96Wfv/eFj7/3dX/P52V/z+dVb7/3RW/P5zVfz+cVT7/nBU+v9wVPr/blP6/21S+v9sUvv+alH6/mlQ+/5oUPr/Z0/7/mZP+/5kTvv+Y076/2JN+/5hTfr+X0z5/15L+v9dS/n/XEr5/1tK+f9aSfr+WEj5/1dH+v5WR/r+VUb5/lRG+P9TRfj/UUX4/1BE+f5PRPn+TkP5/kxC+f5MQvj/SkH4/0lB+P9IQPj/Rj/4/kU/9/9EPvj+Qz7483pZ+/94WPz+d1j7/3ZX/P50Vvv/dFb7/3NW+/9xVPv+cFT6/29U+/5uU/r/bVL6/2xS+v9qUfv+aVH6/2hQ+v9nT/r/ZU77/mVO+/5jTfv+Yk36/2FN+/5fTPn/Xkv6/l1L+f9cSvn/W0n5/1pJ+f9YSPr+V0f5/1ZH+f5VRvn/VEb4/1NF+P9RRPj/UET4/09E+P9NQ/n+TEL4/0xC+f5KQfn+SUH4/0hA+P9GP/j+RT73/0Q++P9DPfj+Qj3383hY/P53WPz+dlf8/nRW+/90Vvv/c1b7/3FV+/5wVPv+b1P7/m1T+v9tUvr/bFL7/mpR+/5pUfv+aFD6/2ZP+v9mT/r/ZE76/mNN+v5iTfr+YUz5/19M+f9eS/n/XUv5/1xK+v5bSfr+Wkn6/lhI+v5XSPr+Vkf6/lRG+f5URvn+UkX5/lFE+f5QRPj/T0P4/01D+f5MQvn+S0L5/kpB+P9JQPj/SED4/0Y/+P5FPvj+RD73/0I99/9CPfj+QD348ndY/P52V/z+dVb7/3NW+/9yVfz+cVT6/3BU+/5vU/v+bVP7/mxS+/5sUvr/alH6/2lR+/5nUPv+Zk/6/2VO+/5kTvr/Y076/2FN+v5hTfr+X0v6/l5L+f9dS/r+W0r6/ltJ+f9aSfn/WEj5/1dI+f9WR/n/VEb4/1NF+f5SRfn/UUX4/1BE+f5PQ/j/TUP5/kxC+f5LQvn+SkH5/klA+f5IQPj/Rj/3/0U+9/9EPvj+Qj34/kE99/9BPPj+Pz3383ZX+/91Vvv/dFb8/nJV+v9xVPr/cFT7/m9T+v9tU/v+bVL6/2xS+/5qUfv+aVD6/2hQ+/5mT/v+ZU/6/2RO+v5jTfr/YU35/2FM+v5fTPn/Xkv5/11L+v5bSvr+Wkn6/llJ+f9YSPr+V0j6/lZH+f5URvn+U0X5/lJF+f5RRfn+UET5/k9E+f5NQ/n+TEL5/ktC+f5KQfn+SED4/khA+P5GP/j/RT/4/0Q++P5DPff/QT33/0E99/8/O/j+Pzz383RW/P50Vvz+clX7/3FV+/9wVPv+b1P7/m1T+/5tUvr/a1L6/2pR+/5pUfr/Z1D6/2ZP+v9lT/r/ZE76/2JN+v9iTfr/YEz5/19M+f9eS/n/XUv5/1tK+f9aSfr+WUn5/1hI+f9XSPr+Vkf4/1RG+f5TRfn+UkX5/lBF+f5QRPn+TkP5/k1D+P9MQvn+S0L5/klB+P9JQfj/R0D5/kY/+P9FPvf/RD73/0I99/9BPff/QDz4/j889/8+O/f/Pzz483NV+/5yVfv+cVT7/3BU+/5vU/v+bVP7/mxS+/5rUvr/alD7/mlQ+v9oUPr/Zk/6/2VP+/5kTvr/Yk36/mFN+v9hTfn/X0z5/15L+v5dSvn/W0r5/1pJ+f9aSfr+WEj5/1ZH+f9WR/n+VEb5/lNG+f9SRfn+UUT4/1BE+P9OQ/n+TUL5/kxC+P9LQvj/SUH4/0lA+P5HQPf/Rj/3/0U/+P9EPvf/Qj33/0E99/9APPf/Pzv3/z879/8+O/f/Pzz38wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
+"
+          />
+          <span class="title">Enter</span>
+        </div>
+        <div id="enter-badge-close" class="close-button">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <mask
+              id="mask0_9401_50408"
+              style="mask-type: luminance"
+              maskUnits="userSpaceOnUse"
+              x="0"
+              y="0"
+              width="16"
+              height="16"
+            >
+              <rect width="16" height="16" fill="white"></rect>
+            </mask>
+            <g mask="url(#mask0_9401_50408)">
+              <path
+                d="M4.26683 12.6673L3.3335 11.734L7.06683 8.00065L3.3335 4.26732L4.26683 3.33398L8.00016 7.06732L11.7335 3.33398L12.6668 4.26732L8.9335 8.00065L12.6668 11.734L11.7335 12.6673L8.00016 8.93398L4.26683 12.6673Z"
+                fill="white"
+                fill-opacity="0.7"
+              ></path>
+            </g>
+          </svg>
+        </div>
+      </div>
+    </a>
+    <script>
+      if (window.self !== window.top || navigator.userAgent.includes("puppeteer")) {
+        var badge = document.getElementById("enter-badge");
+        if (badge) {
+          badge.style.display = "none";
+        }
+      }
+      var closeButton = document.getElementById("enter-badge-close");
+      if (closeButton) {
+        closeButton.addEventListener("click", function (event) {
+          event.preventDefault();
+          event.stopPropagation();
+          var badge = document.getElementById("enter-badge");
+          if (badge) {
+            badge.style.display = "none";
+          }
+        });
+      }
+    </script>
+  </body>
+
+<!-- Mirrored from 8d179a26ae674891b57ac87bb4bb60a1-latest.preview.enterapp.pro/bot-log.txt by HTTrack Website Copier/3.x [XR&CO'2014], Fri, 12 Jun 2026 09:07:28 GMT -->
+</html>

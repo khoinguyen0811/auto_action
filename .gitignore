@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.env
+playwright/.auth/
+tmp/
+bot-output/
+.vscode/
+.agents/
+skills-lock.json
+scratch_test.py
+temp_test.txt
+nul

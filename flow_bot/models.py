@@ -6,6 +6,13 @@ from typing import Callable, Literal, Optional
 
 
 SceneMode = Literal["manual_pause", "skip", "auto_excel"]
+VideoModel = Literal[
+    "auto",
+    "Omni Flash",
+    "Veo 3.1 - Lite",
+    "Veo 3.1 - Fast",
+    "Veo 3.1 - Quality",
+]
 
 
 @dataclass(slots=True)
@@ -61,6 +68,19 @@ class RunConfig:
     website_logo_path: Optional[Path] = None
     continue_on_video_failure: bool = False
     scene_mode: SceneMode = "skip"
+    video_model: VideoModel = "Veo 3.1 - Lite"
+    enable_logo_overlay: bool = True
+    logo_file_path: Optional[str] = None
+    logo_position: str = "top-right"
+    logo_width_percent: int = 12
+    logo_margin: int = 32
+    strict_logo_overlay: bool = False
+    auto_logo_overlay_after_batch: bool = False
+    enable_subtitles: bool = True
+    subtitle_source: str = "voiceover"
+    subtitle_position: str = "bottom"
+    subtitle_font_size: int = 18
+    subtitle_style: str = "clean"
     scene_field_keys: tuple[str, ...] = ()
     merge_after_group_complete: bool = False
     manual_scene_pause_timeout_ms: int = 1_800_000

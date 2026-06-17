@@ -4,6 +4,7 @@ import base64
 import csv
 import json
 import re
+import shutil
 import socket
 import subprocess
 import time
@@ -27,6 +28,12 @@ from playwright.sync_api import (
 )
 
 from .models import ProductRow, RunConfig
+from .video_postprocess import (
+    burn_subtitles_with_ffmpeg,
+    generate_srt,
+    get_video_duration_seconds,
+    overlay_logo_with_ffmpeg,
+)
 
 
 def log(message: str, level: str = "INFO") -> None:
@@ -52,6 +59,7 @@ class FlowBot:
         self.page: Page | None = None
         self.chrome_process: subprocess.Popen | None = None
         self.cdp_port: int | None = None
+        self.cdp_user_data_dir: Path | None = None
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
         self.config.temp_dir.mkdir(parents=True, exist_ok=True)
         self.config.auth_state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -555,12 +563,14 @@ class FlowBot:
     def start(self) -> None:
         self.playwright = sync_playwright().start()
 
-        # ── CDP mode: connect to an already-running Chrome ───
+        # ── Chrome profile mode: launch/connect through CDP ───
         if self.config.chrome_user_data_dir:
             cdp_port = self.config.cdp_port
             self.cdp_port = cdp_port
+            if not self.is_cdp_ready(cdp_port):
+                self.launch_chrome_for_cdp(cdp_port)
             self.emit_log(f"Connecting to Chrome CDP on port {cdp_port}...", "INFO")
-            self.wait_for_cdp_ready(cdp_port, timeout_ms=10_000)
+            self.wait_for_cdp_ready(cdp_port, timeout_ms=30_000)
             self.browser = self.connect_over_cdp_retry(cdp_port, attempts=6)
             self.context = (
                 self.browser.contexts[0]
@@ -709,6 +719,9 @@ class FlowBot:
             f"═══════════════════════════════════════",
             "SUCCESS",
         )
+        if self.config.enable_logo_overlay and self.config.auto_logo_overlay_after_batch:
+            self.emit_log("Batch post-processing: applying missing logo overlays...", "INFO")
+            self.process_batch_logo_overlays()
         if self.config.keep_browser_open:
             self.emit_log("Browser kept open. Press Enter to close.", "INFO")
             input()
@@ -752,8 +765,8 @@ class FlowBot:
 
         # ── Step 2: brainstorm ───────────────────────────────
         self.emit_log(f"{tag} Step 2 — Bắt đầu Brainstorm ý tưởng...")
-        self.emit_log(f"{tag} Step 2 - Selecting video model: Veo 3.1 - Lite...")
-        self.select_video_model_if_available(frame, "Veo 3.1 - Lite")
+        self.emit_log(f"{tag} Step 2 - Selecting video model: {self.config.video_model}...")
+        self.select_video_model_if_available(frame, self.config.video_model)
         self.click_brainstorm_idea(frame)
 
         # ── Wait for Step 3: generate-video ready ────────────
@@ -1089,6 +1102,7 @@ class FlowBot:
             "run_id": self.config.run_id,
             "index": index + 1,
             "product_name": product.product_name,
+            "product_short_description": product.short_description,
             "scene_group_id": scene["scene_group_id"],
             "scene_number": scene["scene_number"],
             "scene_total": scene["scene_total"],
@@ -1134,6 +1148,13 @@ class FlowBot:
                 video_url = video_url_from_data or video_url_fallback
                 video_filename = self.read_flow_output_text("video-filename")
                 video_download_data = self.read_flow_output_text("video-download-data")
+                voiceover_text = self.read_flow_output_text("voiceover")
+                caption_text = self.read_flow_output_text("caption")
+                final_prompt_text = (
+                    self.read_flow_output_text("final-prompt")
+                    or self.read_flow_output_text("final_prompt")
+                    or self.read_flow_output_text("prompt")
+                )
                 result.update(
                     {
                         "scene_group_id": scene_group_id,
@@ -1144,6 +1165,9 @@ class FlowBot:
                         "video_url": video_url,
                         "video_filename": video_filename,
                         "video_download_data": video_download_data,
+                        "voiceover_text": voiceover_text,
+                        "caption_text": caption_text,
+                        "final_prompt_text": final_prompt_text,
                         "status": "completed",
                         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
                         "error": "",
@@ -1207,9 +1231,17 @@ class FlowBot:
             "scene_total",
             "scene_role",
             "scene_title",
+            "raw_video_file",
+            "final_video_file",
             "video_file",
             "storage_path",
             "video_url",
+            "logo_overlay_status",
+            "logo_position",
+            "subtitle_enabled",
+            "subtitle_file",
+            "subtitle_status",
+            "subtitle_source",
             "status",
             "created_at",
             "error",
@@ -1226,8 +1258,10 @@ class FlowBot:
         group_dir = self.video_group_dir(scene_group_id)
         group_dir.mkdir(parents=True, exist_ok=True)
         batch_dir = self.batch_storage_dir()
-        batch_group_dir = batch_dir / self.slugify(scene_group_id)
-        batch_group_dir.mkdir(parents=True, exist_ok=True)
+        batch_raw_dir = batch_dir / "raw"
+        batch_final_dir = batch_dir / "videos"
+        batch_raw_dir.mkdir(parents=True, exist_ok=True)
+        batch_final_dir.mkdir(parents=True, exist_ok=True)
 
         video_file = ""
         video_bytes: bytes | None = None
@@ -1235,7 +1269,8 @@ class FlowBot:
             scene_number = self.parse_scene_int(row.get("scene_number"), 1)
             video_file = self.scene_video_filename(row)
             target = group_dir / video_file
-            batch_target = batch_group_dir / video_file
+            batch_raw_target = batch_raw_dir / video_file
+            batch_final_target = batch_final_dir / video_file
             video_bytes = self.resolve_video_bytes(row)
             if video_bytes is None:
                 raise RuntimeError(
@@ -1243,11 +1278,21 @@ class FlowBot:
                     f"scene {scene_number} before continuing."
                 )
             target.write_bytes(video_bytes)
-            batch_target.write_bytes(video_bytes)
-            self.emit_log(f"Saved scene video: {target.name}", "SUCCESS")
-            row["video_file"] = video_file
+            batch_raw_target.write_bytes(video_bytes)
+            self.emit_log(f"Saved raw scene video: {batch_raw_target.name}", "SUCCESS")
+            postprocess_result = self.create_final_video_with_postprocessing(batch_raw_target, batch_final_target, row)
+            final_target_for_group = batch_final_target if batch_final_target.exists() else batch_raw_target
+            shutil.copyfile(final_target_for_group, target)
+            row["group_video_file"] = video_file
+            row["raw_video_file"] = batch_raw_target.relative_to(batch_dir).as_posix()
+            row["final_video_file"] = batch_final_target.relative_to(batch_dir).as_posix() if batch_final_target.exists() else ""
+            row["video_file"] = row["final_video_file"] or row["raw_video_file"]
             row["batch_id"] = self.batch_id()
-            row["storage_path"] = batch_target.relative_to(self.config.output_dir).as_posix()
+            row["raw_storage_path"] = batch_raw_target.relative_to(self.config.output_dir).as_posix()
+            row["storage_path"] = (
+                batch_final_target if batch_final_target.exists() else batch_raw_target
+            ).relative_to(self.config.output_dir).as_posix()
+            row.update(postprocess_result)
 
         manifest_path = group_dir / "manifest.json"
         manifest = self.load_scene_manifest(manifest_path, row)
@@ -1277,6 +1322,254 @@ class FlowBot:
     def batch_storage_dir(self) -> Path:
         return self.config.output_dir / "storage" / self.batch_id()
 
+    def create_final_video_with_postprocessing(self, raw_video: Path, final_video: Path, row: dict) -> dict:
+        result = {}
+        subtitle_enabled = bool(self.config.enable_subtitles)
+        logo_output = final_video.with_name(f"{final_video.stem}.logo-tmp{final_video.suffix}") if subtitle_enabled else final_video
+
+        logo_result = self.create_final_video_with_logo(raw_video, logo_output)
+        result.update(logo_result)
+        current_video = logo_output if logo_output.exists() else raw_video
+
+        if not subtitle_enabled:
+            return result
+
+        subtitle_result = self.subtitle_result("skipped", "")
+        subtitle_result["subtitle_source"] = self.resolve_subtitle_source_name(row)
+        subtitle_dir = final_video.parent.parent / "subtitles"
+        subtitle_path = subtitle_dir / f"{final_video.stem}.srt"
+        subtitle_text = self.resolve_subtitle_text(row)
+
+        if not subtitle_text.strip():
+            subtitle_result.update(
+                {
+                    "subtitle_status": "skipped",
+                    "subtitle_error": "Subtitle text is empty.",
+                }
+            )
+            if current_video != final_video:
+                shutil.copyfile(current_video, final_video)
+            result.update(subtitle_result)
+            self.cleanup_temp_video(logo_output, final_video)
+            self.emit_log(f"Subtitle skipped: empty text for {final_video.name}", "INFO")
+            return result
+
+        try:
+            duration = get_video_duration_seconds(current_video)
+            self.emit_log(f"Subtitle generation: video duration {duration:.1f}s", "INFO")
+            generate_srt(subtitle_text, duration, subtitle_path)
+            subtitle_result["subtitle_file"] = subtitle_path.relative_to(final_video.parent.parent).as_posix()
+            if not subtitle_path.read_text(encoding="utf-8").strip():
+                subtitle_result.update(
+                    {
+                        "subtitle_status": "skipped",
+                        "subtitle_error": "Generated subtitle is empty.",
+                    }
+                )
+                if current_video != final_video:
+                    shutil.copyfile(current_video, final_video)
+                result.update(subtitle_result)
+                self.cleanup_temp_video(logo_output, final_video)
+                return result
+
+            self.emit_log(f"Adding subtitles to {final_video.name}...", "INFO")
+            burn_subtitles_with_ffmpeg(
+                current_video,
+                subtitle_path,
+                final_video,
+                font_size=self.config.subtitle_font_size,
+            )
+            subtitle_result.update(
+                {
+                    "subtitle_status": "success",
+                    "subtitle_error": "",
+                }
+            )
+            self.emit_log(f"Added subtitles: {final_video.name}", "SUCCESS")
+        except Exception as exc:
+            subtitle_result.update(
+                {
+                    "subtitle_status": "failed",
+                    "subtitle_error": str(exc),
+                }
+            )
+            if current_video != final_video and current_video.exists():
+                shutil.copyfile(current_video, final_video)
+            self.emit_log(f"Subtitle burn failed: {exc}", "WARNING")
+        finally:
+            self.cleanup_temp_video(logo_output, final_video)
+
+        result.update(subtitle_result)
+        return result
+
+    def create_final_video_with_logo(self, raw_video: Path, final_video: Path) -> dict:
+        result = self.logo_overlay_result("skipped", "")
+        if not self.config.enable_logo_overlay:
+            shutil.copyfile(raw_video, final_video)
+            result["logo_overlay_status"] = "disabled"
+            self.emit_log(f"Logo overlay disabled. Saved final video: {final_video.name}", "INFO")
+            return result
+
+        logo_path = self.resolve_logo_overlay_path()
+        if logo_path is None:
+            result.update(
+                {
+                    "logo_overlay_status": "failed",
+                    "logo_overlay_error": "Logo overlay is enabled but no logo file path was provided.",
+                }
+            )
+            self.emit_log(result["logo_overlay_error"], "WARNING")
+            if self.config.strict_logo_overlay:
+                raise RuntimeError(result["logo_overlay_error"])
+            return result
+
+        try:
+            overlay_logo_with_ffmpeg(
+                raw_video,
+                logo_path,
+                final_video,
+                position=self.config.logo_position,
+                logo_width_percent=self.config.logo_width_percent,
+                margin=self.config.logo_margin,
+            )
+            result["logo_overlay_status"] = "success"
+            self.emit_log(f"Applied logo overlay: {final_video.name}", "SUCCESS")
+            return result
+        except Exception as exc:
+            result.update(
+                {
+                    "logo_overlay_status": "failed",
+                    "logo_overlay_error": str(exc),
+                }
+            )
+            self.emit_log(f"Logo overlay failed: {exc}", "WARNING")
+            if self.config.strict_logo_overlay:
+                raise RuntimeError(f"Logo overlay failed: {exc}") from exc
+            return result
+
+    def cleanup_temp_video(self, temp_video: Path, final_video: Path) -> None:
+        if temp_video != final_video:
+            with suppress(Exception):
+                temp_video.unlink()
+
+    def logo_overlay_result(self, status: str, error: str = "") -> dict:
+        return {
+            "logo_overlay_enabled": bool(self.config.enable_logo_overlay),
+            "logo_overlay_status": status,
+            "logo_overlay_error": error,
+            "logo_position": self.config.logo_position,
+            "logo_width_percent": self.config.logo_width_percent,
+            "logo_margin": self.config.logo_margin,
+        }
+
+    def subtitle_result(self, status: str, error: str = "") -> dict:
+        return {
+            "subtitle_enabled": bool(self.config.enable_subtitles),
+            "subtitle_file": "",
+            "subtitle_status": status,
+            "subtitle_error": error,
+            "subtitle_source": self.config.subtitle_source,
+            "subtitle_position": self.config.subtitle_position,
+            "subtitle_font_size": self.config.subtitle_font_size,
+            "subtitle_style": self.config.subtitle_style,
+        }
+
+    def resolve_subtitle_source_name(self, row: dict) -> str:
+        source_text = self.subtitle_source_candidates(row)
+        requested = str(self.config.subtitle_source or "voiceover")
+        if requested != "auto" and source_text.get(requested, "").strip():
+            return requested
+        for source in ("voiceover", "caption", "final_prompt", "short_description"):
+            if source_text.get(source, "").strip():
+                return source
+        return requested
+
+    def resolve_subtitle_text(self, row: dict) -> str:
+        source_text = self.subtitle_source_candidates(row)
+        requested = str(self.config.subtitle_source or "voiceover")
+        if requested != "auto" and source_text.get(requested, "").strip():
+            return source_text[requested]
+        for source in ("voiceover", "caption", "final_prompt", "short_description"):
+            value = source_text.get(source, "").strip()
+            if value:
+                return value
+        return ""
+
+    def subtitle_source_candidates(self, row: dict) -> dict[str, str]:
+        final_prompt = self.compress_voiceover_from_prompt(str(row.get("final_prompt_text") or ""))
+        return {
+            "voiceover": str(row.get("voiceover_text") or ""),
+            "caption": str(row.get("caption_text") or ""),
+            "final_prompt": final_prompt,
+            "short_description": str(row.get("product_short_description") or ""),
+        }
+
+    def compress_voiceover_from_prompt(self, text: str) -> str:
+        value = str(text or "").strip()
+        if not value:
+            return ""
+        match = re.search(
+            r"(?:voiceover|lời thoại|loi thoai|thuyết minh|thuyet minh)\s*[:：-]\s*(.+)",
+            value,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if match:
+            value = match.group(1)
+        value = re.split(r"(?:\n\s*\n|visual|scene|shot|camera)\s*[:：-]", value, maxsplit=1, flags=re.IGNORECASE)[0]
+        value = re.sub(r"\[[^\]]+\]|\([^)]*\)", " ", value)
+        return re.sub(r"\s+", " ", value).strip()
+
+    def resolve_logo_overlay_path(self) -> Path | None:
+        raw_path = self.config.logo_file_path or (
+            self.config.website_logo_path.as_posix() if self.config.website_logo_path else ""
+        )
+        if not raw_path:
+            return None
+        path = Path(raw_path).expanduser()
+        if not path.is_absolute():
+            path = (Path.cwd() / path).resolve()
+        return path
+
+    def process_batch_logo_overlays(self) -> None:
+        batch_dir = self.batch_storage_dir()
+        manifest_path = batch_dir / "manifest.json"
+        if not manifest_path.exists():
+            self.emit_log("Batch manifest not found for logo overlay post-processing.", "WARNING")
+            return
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            self.emit_log(f"Cannot read batch manifest for logo overlay: {exc}", "WARNING")
+            return
+
+        changed = False
+        for item in manifest.get("items", []):
+            if str(item.get("status") or "").lower() != "completed":
+                continue
+            raw_rel = str(item.get("raw_video_file") or "")
+            raw_path = batch_dir / raw_rel if raw_rel else None
+            if raw_path is None or not raw_path.exists():
+                continue
+            final_rel = str(item.get("final_video_file") or f"videos/{raw_path.name}")
+            final_path = batch_dir / final_rel
+            if final_path.exists() and item.get("logo_overlay_status") == "success":
+                continue
+            overlay_result = self.create_final_video_with_logo(raw_path, final_path)
+            item.update(overlay_result)
+            if final_path.exists():
+                item["final_video_file"] = final_rel
+                item["video_file"] = final_rel
+                item["storage_path"] = (final_path.relative_to(self.config.output_dir)).as_posix()
+            changed = True
+
+        if changed:
+            manifest["updated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            self.emit_log("Batch logo overlay manifest updated.", "SUCCESS")
+
     def load_scene_manifest(self, manifest_path: Path, row: dict) -> dict:
         if manifest_path.exists():
             with suppress(Exception):
@@ -1297,10 +1590,23 @@ class FlowBot:
             "scene_number": scene_number,
             "scene_role": row.get("scene_role", ""),
             "scene_title": row.get("scene_title", ""),
-            "video_file": row.get("video_file", ""),
+            "raw_video_file": row.get("raw_video_file", ""),
+            "final_video_file": row.get("final_video_file", ""),
+            "video_file": row.get("group_video_file") or row.get("video_file", ""),
             "video_url": row.get("video_url", ""),
             "status": row.get("status", ""),
             "created_at": row.get("created_at", ""),
+            "logo_overlay_enabled": row.get("logo_overlay_enabled", False),
+            "logo_overlay_status": row.get("logo_overlay_status", ""),
+            "logo_overlay_error": row.get("logo_overlay_error", ""),
+            "logo_position": row.get("logo_position", ""),
+            "logo_width_percent": row.get("logo_width_percent", ""),
+            "subtitle_enabled": row.get("subtitle_enabled", False),
+            "subtitle_file": row.get("subtitle_file", ""),
+            "subtitle_status": row.get("subtitle_status", ""),
+            "subtitle_error": row.get("subtitle_error", ""),
+            "subtitle_source": row.get("subtitle_source", ""),
+            "subtitle_font_size": row.get("subtitle_font_size", ""),
         }
         scenes = manifest.setdefault("scenes", [])
         for index, existing in enumerate(scenes):
@@ -1356,12 +1662,29 @@ class FlowBot:
             "scene_total": self.parse_scene_int(row.get("scene_total"), 1),
             "scene_role": row.get("scene_role", ""),
             "scene_title": row.get("scene_title", ""),
+            "raw_video_file": row.get("raw_video_file", ""),
+            "final_video_file": row.get("final_video_file", ""),
             "video_file": row.get("video_file", ""),
+            "raw_storage_path": row.get("raw_storage_path", ""),
             "storage_path": row.get("storage_path", ""),
             "video_url": row.get("video_url", ""),
             "status": row.get("status", ""),
             "created_at": row.get("created_at", ""),
             "error": row.get("error", ""),
+            "logo_overlay_enabled": row.get("logo_overlay_enabled", False),
+            "logo_overlay_status": row.get("logo_overlay_status", ""),
+            "logo_overlay_error": row.get("logo_overlay_error", ""),
+            "logo_position": row.get("logo_position", ""),
+            "logo_width_percent": row.get("logo_width_percent", ""),
+            "logo_margin": row.get("logo_margin", ""),
+            "subtitle_enabled": row.get("subtitle_enabled", False),
+            "subtitle_file": row.get("subtitle_file", ""),
+            "subtitle_status": row.get("subtitle_status", ""),
+            "subtitle_error": row.get("subtitle_error", ""),
+            "subtitle_source": row.get("subtitle_source", ""),
+            "subtitle_position": row.get("subtitle_position", ""),
+            "subtitle_font_size": row.get("subtitle_font_size", ""),
+            "subtitle_style": row.get("subtitle_style", ""),
             "file_size": len(video_bytes) if video_bytes is not None else 0,
         }
         for idx, existing in enumerate(items):
@@ -2254,6 +2577,137 @@ class FlowBot:
             "Could not find chrome.exe. Install Chrome or update the executable path."
         )
 
+    def launch_chrome_for_cdp(self, port: int) -> None:
+        if self.config.chrome_user_data_dir is None:
+            return
+
+        source_user_data_dir = self.config.chrome_user_data_dir.expanduser()
+        source_user_data_dir.mkdir(parents=True, exist_ok=True)
+        user_data_dir = self.prepare_cdp_user_data_dir(source_user_data_dir)
+        chrome_executable = self.resolve_chrome_executable()
+        args = [
+            chrome_executable,
+            f"--remote-debugging-port={port}",
+            "--remote-debugging-address=127.0.0.1",
+            f"--user-data-dir={user_data_dir}",
+            "--no-first-run",
+            "--no-default-browser-check",
+        ]
+        if self.config.chrome_profile_directory:
+            args.append(f"--profile-directory={self.config.chrome_profile_directory}")
+        args.append(self.config.flow_url)
+
+        profile_label = self.config.chrome_profile_directory or user_data_dir.name
+        self.emit_log(
+            f"Opening Chrome profile {profile_label} with CDP port {port}...",
+            "INFO",
+        )
+        self.chrome_process = subprocess.Popen(args)
+
+    def prepare_cdp_user_data_dir(self, source_user_data_dir: Path) -> Path:
+        if not self.should_clone_chrome_profile(source_user_data_dir):
+            self.cdp_user_data_dir = source_user_data_dir
+            return source_user_data_dir
+
+        profile_directory = self.config.chrome_profile_directory or "Default"
+        safe_profile = re.sub(r"[^A-Za-z0-9_.-]+", "-", profile_directory).strip("-")
+        clone_root = (self.config.temp_dir / f"chrome-cdp-profile-{safe_profile}").resolve()
+        clone_profile_dir = clone_root / profile_directory
+        clone_root.mkdir(parents=True, exist_ok=True)
+
+        if (clone_profile_dir / "Preferences").exists():
+            self.cdp_user_data_dir = clone_root
+            self.emit_log(
+                f"Using existing Chrome CDP profile copy: {clone_root}",
+                "INFO",
+            )
+            return clone_root
+
+        self.emit_log(f"Preparing Chrome profile copy from {profile_directory}...", "INFO")
+        with suppress(Exception):
+            shutil.copy2(source_user_data_dir / "Local State", clone_root / "Local State")
+        self.copy_chrome_profile_tree(
+            source_user_data_dir / profile_directory,
+            clone_profile_dir,
+        )
+        self.cdp_user_data_dir = clone_root
+        self.emit_log("Chrome profile copy is ready for CDP.", "SUCCESS")
+        return clone_root
+
+    @staticmethod
+    def should_clone_chrome_profile(user_data_dir: Path) -> bool:
+        normalized = user_data_dir.resolve().as_posix().lower()
+        return normalized.endswith("/google/chrome/user data")
+
+    def copy_chrome_profile_tree(self, source: Path, target: Path) -> None:
+        if not source.exists():
+            raise FileNotFoundError(f"Chrome profile directory not found: {source}")
+        target.mkdir(parents=True, exist_ok=True)
+        excluded_dirs = [
+            "Cache",
+            "Code Cache",
+            "GPUCache",
+            "DawnCache",
+            "DawnGraphiteCache",
+            "GrShaderCache",
+            "ShaderCache",
+            "Media Cache",
+            "BrowserMetrics",
+            "Crashpad",
+            "Crash Reports",
+            "OptimizationGuidePredictionModels",
+            "Safe Browsing",
+            "SafetyTips",
+            "Safe Browsing Network",
+            "Service Worker\\CacheStorage",
+            "Sessions",
+        ]
+        excluded_files = [
+            "SingletonCookie",
+            "SingletonLock",
+            "SingletonSocket",
+            "lockfile",
+            "*-journal",
+            "*.tmp",
+            "*.log",
+        ]
+        command = [
+            "robocopy",
+            str(source),
+            str(target),
+            "/E",
+            "/R:1",
+            "/W:1",
+            "/NFL",
+            "/NDL",
+            "/NJH",
+            "/NJS",
+            "/NP",
+            "/XF",
+            *excluded_files,
+            "/XD",
+            *excluded_dirs,
+        ]
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode > 7:
+            error = (result.stderr or result.stdout or "Unknown robocopy error.").strip()
+            self.emit_log(
+                "Chrome profile copy skipped some locked files. "
+                "If the bot Chrome opens logged out, sign in once there and run again.",
+                "WARNING",
+            )
+            self.emit_log(error[-700:], "WARNING")
+
+    @staticmethod
+    def is_cdp_ready(port: int) -> bool:
+        try:
+            response = requests.get(
+                f"http://127.0.0.1:{port}/json/version", timeout=1
+            )
+            return response.ok
+        except Exception:
+            return False
+
     def wait_for_cdp_ready(self, port: int, timeout_ms: int = 15_000) -> None:
         deadline = time.time() + timeout_ms / 1000
         last_error = ""
@@ -2267,9 +2721,15 @@ class FlowBot:
             except Exception as exc:
                 last_error = str(exc)
             self.sleep_ms(300)
+        hint = ""
+        if self.config.chrome_user_data_dir:
+            hint = (
+                " If Chrome is already open with this profile, close that Chrome window "
+                "and press Run Bot again."
+            )
         raise RuntimeError(
             f"Chrome remote debugging endpoint did not become ready on port {port}. "
-            f"{last_error}"
+            f"{last_error}{hint}"
         )
 
     def connect_over_cdp_retry(self, port: int, attempts: int = 5):

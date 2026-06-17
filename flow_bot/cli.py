@@ -36,6 +36,18 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--no-auto-next", action="store_true")
     run.add_argument("--no-auto-generate", action="store_true")
     run.add_argument("--no-auto-restart", action="store_true")
+    run.add_argument(
+        "--video-model",
+        default="Veo 3.1 - Lite",
+        choices=[
+            "auto",
+            "Omni Flash",
+            "Veo 3.1 - Lite",
+            "Veo 3.1 - Fast",
+            "Veo 3.1 - Quality",
+        ],
+        help="Video model to select on Step 2 before Brainstorm.",
+    )
     run.add_argument("--continue-on-video-failure", action="store_true")
     run.add_argument("--keep-browser-open", action="store_true")
 
@@ -59,6 +71,7 @@ def build_config(args: argparse.Namespace) -> RunConfig:
         auto_next=not getattr(args, "no_auto_next", False),
         auto_generate=not getattr(args, "no_auto_generate", False),
         auto_restart=not getattr(args, "no_auto_restart", False),
+        video_model=getattr(args, "video_model", "Veo 3.1 - Lite"),
         continue_on_video_failure=getattr(args, "continue_on_video_failure", False),
         keep_browser_open=getattr(args, "keep_browser_open", False),
     )

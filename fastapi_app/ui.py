@@ -553,6 +553,62 @@ def render_home(flow_url: str) -> str:
     .log-badge-SUCCESS { background: var(--success-subtle); color: var(--success-text); }
     .log-badge-WARNING { background: var(--warning-subtle); color: var(--warning-text); }
     .log-badge-ERROR { background: var(--error-subtle); color: var(--error); }
+    .postprocess-panel {
+      display: grid;
+      gap: 0.625rem;
+      border: 1px solid var(--border);
+      border-radius: 0.625rem;
+      background: #ffffff;
+      padding: 0.75rem;
+    }
+    .postprocess-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+    .postprocess-title {
+      color: var(--text);
+      font-weight: 800;
+      font-size: 0.875rem;
+    }
+    .postprocess-track {
+      height: 0.5rem;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #eef2ff;
+      border: 1px solid #e0e7ff;
+    }
+    .postprocess-fill {
+      width: 0%;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #2563eb, #16a34a);
+      transition: width 0.35s ease;
+    }
+    .postprocess-steps {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 0.375rem;
+    }
+    .postprocess-step {
+      min-width: 0;
+      border-radius: 0.375rem;
+      border: 1px solid var(--border);
+      background: #f9fafb;
+      color: var(--muted);
+      padding: 0.35rem 0.45rem;
+      text-align: center;
+      font-size: 0.68rem;
+      font-weight: 800;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .postprocess-step.active { border-color: #93c5fd; background: #eff6ff; color: #1d4ed8; }
+    .postprocess-step.done { border-color: #bbf7d0; background: #f0fdf4; color: #15803d; }
     .empty {
       display: flex;
       min-height: 180px;
@@ -769,9 +825,9 @@ def render_home(flow_url: str) -> str:
 
         <div class="soft-card">
           <div class="form-label" style="text-transform:uppercase;letter-spacing:.08em;color:var(--faint);">
-            Chrome command
+            Chrome profile
           </div>
-          <div class="code-block">chrome.exe --remote-debugging-port=9222 --user-data-dir="C:\\Users\\acer\\AppData\\Local\\Google\\Chrome\\User Data" --profile-directory="Profile 12" __FLOW_URL__</div>
+          <div class="code-block">Bot sẽ tự mở Chrome bằng Profile 12 khi bấm Run Bot.</div>
         </div>
 
         <div id="status-bar" class="status-bar"></div>
@@ -839,6 +895,16 @@ def render_home(flow_url: str) -> str:
               <label class="form-label" for="wait-timeout">Video Timeout <span class="info" title="Thời gian tối đa đợi video tạo xong.">i</span></label>
               <input class="form-input" id="wait-timeout" type="number" value="180" min="30"/>
             </div>
+            <div>
+              <label class="form-label" for="video-model">Video Model</label>
+              <select class="form-input" id="video-model">
+                <option value="auto">Auto (Recommended)</option>
+                <option value="Omni Flash">Omni Flash</option>
+                <option value="Veo 3.1 - Lite" selected>Veo 3.1 - Lite</option>
+                <option value="Veo 3.1 - Fast">Veo 3.1 - Fast</option>
+                <option value="Veo 3.1 - Quality">Veo 3.1 - Quality</option>
+              </select>
+            </div>
             <div class="span-all" style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.25rem;">
               <input type="checkbox" id="auto-download-zip" checked/>
               <label for="auto-download-zip" style="color: var(--text); font-size: 0.875rem; cursor: pointer; user-select: none;">Tự động tải file ZIP chứa tất cả video (đã sắp xếp theo folder) khi batch hoàn thành</label>
@@ -852,6 +918,60 @@ def render_home(flow_url: str) -> str:
                 <option value="2160p">2160p</option>
                 <option value="original">Original</option>
               </select>
+            </div>
+            <div class="span-all" style="display:flex;align-items:center;gap:.5rem;margin-top:.25rem">
+              <input type="checkbox" id="enable-subtitles" checked/>
+              <label for="enable-subtitles" style="color: var(--text); font-size: 0.875rem; cursor: pointer; user-select: none;">Generate subtitles</label>
+            </div>
+            <div>
+              <label class="form-label" for="subtitle-source">Subtitle Source</label>
+              <select class="form-input" id="subtitle-source">
+                <option value="voiceover" selected>voiceover</option>
+                <option value="caption">caption</option>
+                <option value="final_prompt">final prompt</option>
+                <option value="short_description">short description</option>
+                <option value="auto">auto fallback</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label" for="subtitle-font-size">Subtitle Font Size</label>
+              <input class="form-input" id="subtitle-font-size" type="number" value="18" min="10" max="48"/>
+            </div>
+            <div class="span-all" style="display:flex;align-items:center;gap:.5rem;margin-top:.25rem">
+              <input type="checkbox" id="enable-logo-overlay" data-ui-field="enable-logo-overlay" checked/>
+              <label for="enable-logo-overlay" style="color: var(--text); font-size: 0.875rem; cursor: pointer; user-select: none;">Enable Logo Overlay</label>
+            </div>
+            <div class="span-all">
+              <label class="form-label" for="logo-file-path">Logo File Path</label>
+              <input class="form-input" id="logo-file-path" data-ui-field="logo-file-path" placeholder="Path to logo image; auto-filled after Upload Logo"/>
+            </div>
+            <div>
+              <label class="form-label" for="logo-position">Logo Position</label>
+              <select class="form-input" id="logo-position" data-ui-field="logo-position">
+                <option value="top-left">top-left</option>
+                <option value="top-right" selected>top-right</option>
+                <option value="bottom-left">bottom-left</option>
+                <option value="bottom-right">bottom-right</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label" for="logo-width-percent">Logo Width Percent</label>
+              <input class="form-input" id="logo-width-percent" data-ui-field="logo-width-percent" type="number" value="12" min="5" max="25"/>
+            </div>
+            <div>
+              <label class="form-label" for="logo-margin">Logo Margin</label>
+              <input class="form-input" id="logo-margin" data-ui-field="logo-margin" type="number" value="32" min="0"/>
+            </div>
+            <div class="span-all" style="display:flex;align-items:center;gap:.5rem;margin-top:.25rem">
+              <input type="checkbox" id="auto-logo-overlay-after-batch" data-ui-field="auto-logo-overlay-after-batch"/>
+              <label for="auto-logo-overlay-after-batch" style="color: var(--text); font-size: 0.875rem; cursor: pointer; user-select: none;">Auto logo overlay after batch</label>
+            </div>
+            <div class="span-all">
+              <div id="logo-overlay-preview" style="position:relative;aspect-ratio:16/9;max-width:420px;border-radius:8px;overflow:hidden;background:linear-gradient(135deg,#111827,#334155);border:1px solid var(--border);">
+                <div style="position:absolute;inset:0;background:linear-gradient(90deg,rgba(255,255,255,.08) 1px,transparent 1px),linear-gradient(0deg,rgba(255,255,255,.08) 1px,transparent 1px);background-size:36px 36px;"></div>
+                <div style="position:absolute;left:5%;bottom:8%;color:white;font-weight:800;font-size:.8rem;text-shadow:0 1px 8px rgba(0,0,0,.6)">Video demo</div>
+                <div id="logo-overlay-preview-mark" style="position:absolute;display:flex;align-items:center;justify-content:center;aspect-ratio:2.4/1;background:rgba(255,255,255,.94);color:#111827;border:1px solid rgba(15,23,42,.15);font-weight:900;font-size:.68rem;border-radius:4px;box-shadow:0 4px 18px rgba(0,0,0,.25);">LOGO</div>
+              </div>
             </div>
           </div>
         </div>
@@ -1034,6 +1154,17 @@ def render_home(flow_url: str) -> str:
           <button class="filter-tab" data-filter="WARNING" onclick="setLogFilter('WARNING', this)">Warning</button>
           <button class="filter-tab" data-filter="ERROR" onclick="setLogFilter('ERROR', this)">Error</button>
         </div>
+        <div class="postprocess-panel" id="postprocess-panel">
+          <div class="postprocess-head">
+            <div>
+              <div class="postprocess-title" id="postprocess-title">Post-processing ready</div>
+              <div id="postprocess-detail">Waiting for generated videos.</div>
+            </div>
+            <strong id="postprocess-percent">0%</strong>
+          </div>
+          <div class="postprocess-track"><div class="postprocess-fill" id="postprocess-fill"></div></div>
+          <div class="postprocess-steps" id="postprocess-steps"></div>
+        </div>
         <div id="log-box" class="log-box"><div class="empty">Waiting for batch...</div></div>
       </section>
 
@@ -1093,7 +1224,17 @@ def render_home(flow_url: str) -> str:
     logoName: 'flowBot.logoName',
     floatingRunPos: 'flowBot.floatingRunPos',
     autoDownloadZip: 'flowBot.autoDownloadZip',
-    downloadResolution: 'flowBot.downloadResolution'
+    downloadResolution: 'flowBot.downloadResolution',
+    videoModel: 'flowBot.videoModel',
+    enableLogoOverlay: 'flowBot.enableLogoOverlay',
+    logoFilePath: 'flowBot.logoFilePath',
+    logoPosition: 'flowBot.logoPosition',
+    logoWidthPercent: 'flowBot.logoWidthPercent',
+    logoMargin: 'flowBot.logoMargin',
+    autoLogoOverlayAfterBatch: 'flowBot.autoLogoOverlayAfterBatch',
+    enableSubtitles: 'flowBot.enableSubtitles',
+    subtitleSource: 'flowBot.subtitleSource',
+    subtitleFontSize: 'flowBot.subtitleFontSize'
   };
   const FIELDS = [
     {key:'product_image', label:'product_image', help:'Cột chứa link ảnh sản phẩm.', required:false},
@@ -1113,11 +1254,15 @@ def render_home(flow_url: str) -> str:
   let terminalAlertShown = false;
   let uploadedLogoPath = null;
   let uploadedLogoName = '';
-  let videoBatches = [];
-  let selectedBatchId = null;
+    let videoBatches = [];
+    let selectedBatchId = null;
   let floatingRunDrag = null;
   let floatingRunSuppressClickUntil = 0;
   let floatingRunWasDragged = false;
+  const POSTPROCESS_STEPS = ['Generate','Logo','Subtitle','Upscale','Done'];
+  let postprocessTicker = null;
+  let postprocessDuration = 0;
+  let postprocessSecond = 0;
 
   document.addEventListener('DOMContentLoaded', () => {
     renderPipeline();
@@ -1156,12 +1301,25 @@ def render_home(flow_url: str) -> str:
         persistSettings();
       });
     });
-    ['slow-mo','wait-timeout','start','count'].forEach(id => {
+    ['slow-mo','wait-timeout','start','count','logo-width-percent','logo-margin','logo-file-path','subtitle-font-size'].forEach(id => {
       document.getElementById(id).addEventListener('input', persistSettings);
     });
     document.getElementById('auto-download-zip').addEventListener('change', persistSettings);
     document.getElementById('download-resolution').addEventListener('change', persistSettings);
+    document.getElementById('video-model').addEventListener('change', persistSettings);
+    document.getElementById('enable-subtitles').addEventListener('change', persistSettings);
+    document.getElementById('subtitle-source').addEventListener('change', persistSettings);
+    document.getElementById('enable-logo-overlay').addEventListener('change', persistSettings);
+    document.getElementById('logo-position').addEventListener('change', persistSettings);
+    document.getElementById('auto-logo-overlay-after-batch').addEventListener('change', persistSettings);
+    ['logo-position','logo-width-percent','logo-margin'].forEach(id => {
+      const input = document.getElementById(id);
+      input.addEventListener('input', updateLogoOverlayPreview);
+      input.addEventListener('change', updateLogoOverlayPreview);
+    });
     updateSceneModeAvailability(false);
+    updateLogoOverlayPreview();
+    resetPostprocessProgress();
     updateFloatingRunState();
     loadVideoBatches();
     loadDatasetHistory();
@@ -1342,7 +1500,10 @@ def render_home(flow_url: str) -> str:
       `;
     }
     if (actions) {
-      actions.innerHTML = data.zip_url ? `<button class="btn btn-primary" onclick="downloadBatchZip('${escapeHtml(data.batch_id)}')">Download Batch ZIP</button>` : '';
+      actions.innerHTML = data.zip_url
+        ? `<button class="btn btn-outline" onclick="testBatchLogoOverlay('${escapeHtml(data.batch_id)}')">Test Logo Overlay</button>
+           <button class="btn btn-primary" onclick="downloadBatchZip('${escapeHtml(data.batch_id)}')">Download Batch ZIP</button>`
+        : '';
     }
     const items = Array.isArray(data.items) ? data.items : [];
     if (!grid) return;
@@ -1350,7 +1511,12 @@ def render_home(flow_url: str) -> str:
       grid.innerHTML = '<div class="empty" style="grid-column:1/-1">Batch này chưa có video.</div>';
       return;
     }
-    grid.innerHTML = items.map(item => `
+    grid.innerHTML = items.map(item => {
+      const overlayStatus = item.logo_overlay_status || (item.logo_overlay_enabled ? 'pending' : 'disabled');
+      const overlayBadgeClass = overlayStatus === 'success' ? 'badge-success' : (overlayStatus === 'failed' ? 'badge-error' : 'badge-muted');
+      const subtitleStatus = item.subtitle_status || (item.subtitle_enabled ? 'pending' : 'disabled');
+      const subtitleBadgeClass = subtitleStatus === 'success' ? 'badge-success' : (subtitleStatus === 'failed' ? 'badge-error' : 'badge-muted');
+      return `
       <div class="video-card">
         ${item.preview_url && item.status === 'completed'
           ? `<video controls preload="metadata" src="${escapeHtml(item.preview_url)}"></video>`
@@ -1363,15 +1529,24 @@ def render_home(flow_url: str) -> str:
             ${escapeHtml(item.created_at || '')}<br>
             ${escapeHtml(formatFileSize(item.file_size || 0))}
           </div>
+          <div class="video-card-meta">
+            <span class="badge ${overlayBadgeClass}">Logo ${escapeHtml(overlayStatus)}</span>
+            <span class="badge badge-outline">${escapeHtml(item.logo_position || '-')}</span>
+            <span class="badge ${subtitleBadgeClass}">Subtitle ${escapeHtml(subtitleStatus)}</span>
+            <span class="badge badge-outline">${escapeHtml(item.subtitle_source || '-')}</span>
+          </div>
           <div class="video-card-actions">
             ${item.preview_url && item.status === 'completed'
               ? `<button class="btn btn-outline" onclick="previewBatchVideo('${escapeHtml(item.preview_url)}', '${escapeHtml(item.product_name || item.scene_title || 'Video preview')}')">View</button>
-                 <a class="btn btn-primary" href="${escapeHtml(item.download_url)}" download>Download</a>`
+                 <button class="btn btn-outline" onclick="testBatchLogoOverlay('${escapeHtml(data.batch_id)}')">Test Logo</button>
+                 ${item.raw_download_url ? `<button class="btn btn-outline" onclick="downloadBatchVideo('${escapeHtml(item.raw_download_url)}')">Raw</button>` : ''}
+                 ${item.subtitle_download_url ? `<a class="btn btn-outline" href="${escapeHtml(item.subtitle_download_url)}" download>SRT</a>` : ''}
+                 ${item.final_download_url ? `<button class="btn btn-primary" onclick="downloadBatchVideo('${escapeHtml(item.final_download_url)}')">Final</button>` : ''}`
               : `<span class="badge badge-error">${escapeHtml(item.error || item.status || 'Unavailable')}</span>`}
           </div>
         </div>
       </div>
-    `).join('');
+    `}).join('');
   }
 
   function previewBatchVideo(url, title) {
@@ -1392,6 +1567,63 @@ def render_home(flow_url: str) -> str:
     return input ? (input.value || '1080p') : '1080p';
   }
 
+  async function downloadBatchVideo(url) {
+    const resolution = getDownloadResolution();
+    const separator = url.includes('?') ? '&' : '?';
+    const resolvedUrl = `${url}${separator}resolution=${encodeURIComponent(resolution)}`;
+    const isOriginal = resolution === 'original';
+    const loadingText = isOriginal
+      ? 'Äang táº£i video...'
+      : `Äang tÄƒng Ä‘á»™ phÃ¢n giáº£i video lÃªn ${resolution}...`;
+    setStatus(loadingText);
+    setPostprocessProgress(3, 82, isOriginal ? 'Downloading video' : 'Upscaling video', loadingText);
+    try {
+      const resp = await fetch(resolvedUrl);
+      if (!resp.ok) {
+        let message = `HTTP ${resp.status}`;
+        try {
+          const data = await resp.json();
+          message = data.detail || message;
+        } catch {}
+        throw new Error(message);
+      }
+      const blob = await resp.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = objectUrl;
+      a.download = decodeURIComponent((new URL(url, window.location.origin)).pathname.split('/').pop() || 'video.mp4');
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 5000);
+      setPostprocessProgress(4, 100, 'Video download ready', isOriginal ? 'Original video downloaded.' : `${resolution} upscale completed.`);
+      setStatus('ÄÃ£ táº£i video.');
+    } catch (err) {
+      const message = err && err.message ? err.message : String(err);
+      setStatus('Táº£i video tháº¥t báº¡i: ' + message, false);
+      alertBox('error', 'Download failed', message);
+    }
+  }
+
+  function updateLogoOverlayPreview() {
+    const mark = document.getElementById('logo-overlay-preview-mark');
+    const preview = document.getElementById('logo-overlay-preview');
+    if (!mark || !preview) return;
+    const position = document.getElementById('logo-position')?.value || 'top-right';
+    const widthPercent = Math.min(25, Math.max(5, Number(document.getElementById('logo-width-percent')?.value || 12)));
+    const margin = Math.max(0, Number(document.getElementById('logo-margin')?.value || 32));
+    const marginPercent = Math.min(14, Math.max(1.5, margin / 16));
+    mark.style.width = `${widthPercent}%`;
+    mark.style.left = '';
+    mark.style.right = '';
+    mark.style.top = '';
+    mark.style.bottom = '';
+    if (position.includes('right')) mark.style.right = `${marginPercent}%`;
+    else mark.style.left = `${marginPercent}%`;
+    if (position.includes('bottom')) mark.style.bottom = `${marginPercent}%`;
+    else mark.style.top = `${marginPercent}%`;
+  }
+
   async function downloadBatchZip(batchId) {
     const resolution = getDownloadResolution();
     const isOriginal = resolution === 'original';
@@ -1399,6 +1631,7 @@ def render_home(flow_url: str) -> str:
       ? 'Đang đóng gói video...'
       : `Đang tăng độ phân giải video lên ${resolution}...`;
     setStatus(loadingText);
+    setPostprocessProgress(3, 84, isOriginal ? 'Packaging ZIP' : 'Upscaling ZIP videos', loadingText);
     if (window.Swal) {
       Swal.fire({
         title: loadingText,
@@ -1428,12 +1661,68 @@ def render_home(flow_url: str) -> str:
       a.remove();
       setTimeout(() => URL.revokeObjectURL(objectUrl), 5000);
       if (window.Swal) Swal.close();
+      setPostprocessProgress(4, 100, 'ZIP download ready', isOriginal ? 'Original videos packaged.' : `${resolution} upscale completed.`);
       setStatus('Đã tải ZIP video.');
     } catch (err) {
       if (window.Swal) Swal.close();
       const message = err && err.message ? err.message : String(err);
       setStatus('Tải ZIP thất bại: ' + message, false);
       alertBox('error', 'Download failed', message);
+    }
+  }
+
+  async function testBatchLogoOverlay(batchId) {
+    persistSettings();
+    const selectedLogo = document.getElementById('logo-file').files[0];
+    if (selectedLogo) {
+      setStatus('Đang upload logo mới trước khi test overlay...');
+      const ready = await uploadLogo(true);
+      if (!ready) {
+        return alertBox('error', 'Upload logo failed', 'Không thể upload logo mới trước khi test overlay.');
+      }
+    }
+    const logoPath = document.getElementById('logo-file-path').value.trim() || uploadedLogoPath || '';
+    if (!logoPath) {
+      return alertBox('warning', 'Missing logo path', 'Upload logo hoặc nhập Logo File Path trước khi test overlay.');
+    }
+    const payload = {
+      logo_file_path: logoPath,
+      logo_position: document.getElementById('logo-position').value || 'top-right',
+      logo_width_percent: Number(document.getElementById('logo-width-percent').value || 12),
+      logo_margin: Number(document.getElementById('logo-margin').value || 32)
+    };
+    const loadingText = 'Đang test logo overlay trên video đã có...';
+    setStatus(loadingText);
+    if (window.Swal) {
+      Swal.fire({
+        title: loadingText,
+        allowOutsideClick: false,
+        allowEscapeKey: false,
+        didOpen: () => Swal.showLoading()
+      });
+    }
+    try {
+      const resp = await fetch(`/api/storage/batches/${encodeURIComponent(batchId)}/logo-overlay/test`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        throw new Error(data.detail || `HTTP ${resp.status}`);
+      }
+      if (window.Swal) Swal.close();
+      const processed = data.logo_overlay_processed || 0;
+      const failed = data.logo_overlay_failed || 0;
+      setStatus(`Logo overlay test xong: ${processed} success, ${failed} failed.`);
+      await loadVideoBatches(batchId);
+      await renderBatchDetail(batchId);
+      toast(failed ? 'warning' : 'success', `Overlay test: ${processed} success, ${failed} failed`);
+    } catch (err) {
+      if (window.Swal) Swal.close();
+      const message = err && err.message ? err.message : String(err);
+      setStatus('Logo overlay test thất bại: ' + message, false);
+      alertBox('error', 'Overlay test failed', message);
     }
   }
 
@@ -1627,6 +1916,39 @@ def render_home(flow_url: str) -> str:
     if (downloadResolution !== null) {
       document.getElementById('download-resolution').value = downloadResolution;
     }
+    const videoModel = localStorage.getItem(STORAGE.videoModel);
+    if (videoModel !== null) {
+      document.getElementById('video-model').value = videoModel;
+    }
+    const enableLogoOverlay = localStorage.getItem(STORAGE.enableLogoOverlay);
+    if (enableLogoOverlay !== null) {
+      document.getElementById('enable-logo-overlay').checked = (enableLogoOverlay === 'true');
+    }
+    const enableSubtitles = localStorage.getItem(STORAGE.enableSubtitles);
+    if (enableSubtitles !== null) {
+      document.getElementById('enable-subtitles').checked = (enableSubtitles === 'true');
+    }
+    const subtitleSource = localStorage.getItem(STORAGE.subtitleSource);
+    if (subtitleSource !== null) {
+      document.getElementById('subtitle-source').value = subtitleSource;
+    }
+    const subtitleFontSize = localStorage.getItem(STORAGE.subtitleFontSize);
+    if (subtitleFontSize !== null) {
+      document.getElementById('subtitle-font-size').value = subtitleFontSize;
+    }
+    const autoLogoOverlayAfterBatch = localStorage.getItem(STORAGE.autoLogoOverlayAfterBatch);
+    if (autoLogoOverlayAfterBatch !== null) {
+      document.getElementById('auto-logo-overlay-after-batch').checked = (autoLogoOverlayAfterBatch === 'true');
+    }
+    [
+      ['logo-file-path', STORAGE.logoFilePath],
+      ['logo-position', STORAGE.logoPosition],
+      ['logo-width-percent', STORAGE.logoWidthPercent],
+      ['logo-margin', STORAGE.logoMargin],
+    ].forEach(([id, key]) => {
+      const value = localStorage.getItem(key);
+      if (value !== null) document.getElementById(id).value = value;
+    });
     setSceneMode(localStorage.getItem(STORAGE.sceneMode) || 'skip');
     document.getElementById('cdp-chip').textContent = 'CDP ' + (document.getElementById('cdp-port').value || '9222');
     const presetJson = localStorage.getItem(STORAGE.presetJson);
@@ -1637,6 +1959,7 @@ def render_home(flow_url: str) -> str:
     updatePresetState(false);
     updateLogoState();
     updateSceneModeAvailability(false);
+    updateLogoOverlayPreview();
     updateFloatingRunState();
   }
 
@@ -1649,6 +1972,16 @@ def render_home(flow_url: str) -> str:
     localStorage.setItem(STORAGE.sceneMode, getSceneMode());
     localStorage.setItem(STORAGE.autoDownloadZip, document.getElementById('auto-download-zip').checked);
     localStorage.setItem(STORAGE.downloadResolution, document.getElementById('download-resolution').value);
+    localStorage.setItem(STORAGE.videoModel, document.getElementById('video-model').value);
+    localStorage.setItem(STORAGE.enableSubtitles, document.getElementById('enable-subtitles').checked);
+    localStorage.setItem(STORAGE.subtitleSource, document.getElementById('subtitle-source').value);
+    localStorage.setItem(STORAGE.subtitleFontSize, document.getElementById('subtitle-font-size').value);
+    localStorage.setItem(STORAGE.enableLogoOverlay, document.getElementById('enable-logo-overlay').checked);
+    localStorage.setItem(STORAGE.logoFilePath, document.getElementById('logo-file-path').value);
+    localStorage.setItem(STORAGE.logoPosition, document.getElementById('logo-position').value);
+    localStorage.setItem(STORAGE.logoWidthPercent, document.getElementById('logo-width-percent').value);
+    localStorage.setItem(STORAGE.logoMargin, document.getElementById('logo-margin').value);
+    localStorage.setItem(STORAGE.autoLogoOverlayAfterBatch, document.getElementById('auto-logo-overlay-after-batch').checked);
   }
 
   function sanitizePresetObject(value) {
@@ -1801,8 +2134,11 @@ def render_home(flow_url: str) -> str:
       uploadedLogoName = data.original_name || file.name;
       localStorage.setItem(STORAGE.logoPath, uploadedLogoPath);
       localStorage.setItem(STORAGE.logoName, uploadedLogoName);
+      document.getElementById('logo-file-path').value = uploadedLogoPath;
+      localStorage.setItem(STORAGE.logoFilePath, uploadedLogoPath);
       document.getElementById('logo-file-name').textContent = uploadedLogoName;
       updateLogoState();
+      updateLogoOverlayPreview();
       if (!silent) toast('success', 'Logo uploaded');
       return true;
     }
@@ -1816,6 +2152,10 @@ def render_home(flow_url: str) -> str:
     document.getElementById('logo-file-name').textContent = 'No logo selected';
     uploadedLogoPath = null;
     uploadedLogoName = '';
+    if (document.getElementById('logo-file-path').value === localStorage.getItem(STORAGE.logoPath)) {
+      document.getElementById('logo-file-path').value = '';
+      localStorage.removeItem(STORAGE.logoFilePath);
+    }
     localStorage.removeItem(STORAGE.logoPath);
     localStorage.removeItem(STORAGE.logoName);
     updateLogoState();
@@ -1825,6 +2165,7 @@ def render_home(flow_url: str) -> str:
   function clearLog() {
     logEntries = [];
     renderLogs();
+    resetPostprocessProgress();
   }
 
   function appendLog(time, level, message) {
@@ -1832,6 +2173,7 @@ def render_home(flow_url: str) -> str:
     logEntries.push(entry);
     renderLogs();
     updatePipelineFromLog(entry);
+    updatePostprocessFromLog(entry);
   }
 
   function renderLogs() {
@@ -1930,6 +2272,89 @@ def render_home(flow_url: str) -> str:
     if (message.includes('clicked brainstorm idea') || message.includes('generate video step is ready')) setPipeline(4, 'Brainstorm done');
     if (message.includes('clicked generate video') || message.includes('waiting for video generation')) setPipeline(5, 'Video generation in progress');
     if (message.includes('clicked create next product') || message.includes('step 1 is ready for next product')) setPipeline(6, 'Ready to create next product');
+  }
+
+  function resetPostprocessProgress() {
+    stopPostprocessTicker();
+    postprocessDuration = 0;
+    postprocessSecond = 0;
+    setPostprocessProgress(0, 0, 'Post-processing ready', 'Waiting for generated videos.');
+  }
+
+  function setPostprocessProgress(stepIndex, percent, title, detail) {
+    const fill = document.getElementById('postprocess-fill');
+    const percentEl = document.getElementById('postprocess-percent');
+    const titleEl = document.getElementById('postprocess-title');
+    const detailEl = document.getElementById('postprocess-detail');
+    if (fill) fill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+    if (percentEl) percentEl.textContent = `${Math.round(Math.max(0, Math.min(100, percent)))}%`;
+    if (titleEl) titleEl.textContent = title;
+    if (detailEl) detailEl.textContent = detail;
+    renderPostprocessSteps(stepIndex);
+  }
+
+  function renderPostprocessSteps(activeIndex=0) {
+    const target = document.getElementById('postprocess-steps');
+    if (!target) return;
+    target.innerHTML = POSTPROCESS_STEPS.map((label, index) => {
+      const cls = index < activeIndex ? 'done' : (index === activeIndex ? 'active' : '');
+      return `<div class="postprocess-step ${cls}">${escapeHtml(label)}</div>`;
+    }).join('');
+  }
+
+  function updatePostprocessFromLog(entry) {
+    const message = String(entry.message || '').toLowerCase();
+    const rawMessage = String(entry.message || '');
+    const durationMatch = rawMessage.match(/duration\s+([0-9]+(?:\.[0-9]+)?)s/i);
+    if (durationMatch) postprocessDuration = Number(durationMatch[1]) || 0;
+    if (message.includes('saved raw scene video')) {
+      setPostprocessProgress(0, 22, 'Video saved', 'Preparing post-processing pipeline.');
+    }
+    if (message.includes('applying missing logo overlays') || message.includes('applied logo overlay')) {
+      setPostprocessProgress(1, 42, 'Logo overlay complete', 'Logo layer is ready for subtitle burn-in.');
+    }
+    if (message.includes('subtitle generation')) {
+      setPostprocessProgress(2, 58, 'Generating SRT subtitles', `Detected duration ${postprocessDuration || '?'}s.`);
+    }
+    if (message.includes('adding subtitles to')) {
+      startSubtitleTicker();
+    }
+    if (message.includes('added subtitles')) {
+      stopPostprocessTicker();
+      setPostprocessProgress(2, 74, 'Subtitles added', 'Final video now includes burned-in Vietnamese subtitles.');
+    }
+    if (message.includes('subtitle skipped')) {
+      stopPostprocessTicker();
+      setPostprocessProgress(2, 66, 'Subtitles skipped', rawMessage);
+    }
+    if (message.includes('subtitle burn failed')) {
+      stopPostprocessTicker();
+      setPostprocessProgress(2, 66, 'Subtitle burn failed', 'Kept video without subtitles and saved the error.');
+    }
+    if (message.includes('batch completed')) {
+      stopPostprocessTicker();
+      setPostprocessProgress(4, 100, 'Batch completed', 'Videos are ready.');
+    }
+  }
+
+  function startSubtitleTicker() {
+    stopPostprocessTicker();
+    postprocessSecond = 0;
+    const total = Math.max(1, Math.ceil(postprocessDuration || 8));
+    setPostprocessProgress(2, 62, 'Burning subtitles', `Dang them subtitle cho giay thu 0/${total}.`);
+    postprocessTicker = setInterval(() => {
+      postprocessSecond = Math.min(total, postprocessSecond + 1);
+      const percent = 62 + Math.min(10, (postprocessSecond / total) * 10);
+      setPostprocessProgress(2, percent, 'Burning subtitles', `Dang them subtitle cho giay thu ${postprocessSecond}/${total}.`);
+      if (postprocessSecond >= total) stopPostprocessTicker();
+    }, 700);
+  }
+
+  function stopPostprocessTicker() {
+    if (postprocessTicker) {
+      clearInterval(postprocessTicker);
+      postprocessTicker = null;
+    }
   }
 
   function renderMappingFields() {
@@ -2242,10 +2667,23 @@ def render_home(flow_url: str) -> str:
       wait_timeout_seconds: Number(document.getElementById('wait-timeout').value || 180),
       cdp_port: Number(document.getElementById('cdp-port').value || 9222),
       scene_mode: sceneMode === 'auto_excel' && !datasetHasSceneColumns() ? 'skip' : sceneMode,
+      video_model: document.getElementById('video-model').value || 'Veo 3.1 - Lite',
+      enable_subtitles: document.getElementById('enable-subtitles').checked,
+      subtitle_source: document.getElementById('subtitle-source').value || 'voiceover',
+      subtitle_position: 'bottom',
+      subtitle_font_size: Number(document.getElementById('subtitle-font-size').value || 18),
+      subtitle_style: 'clean',
+      enable_logo_overlay: document.getElementById('enable-logo-overlay').checked,
+      logo_file_path: document.getElementById('logo-file-path').value.trim() || uploadedLogoPath || null,
+      logo_position: document.getElementById('logo-position').value || 'top-right',
+      logo_width_percent: Number(document.getElementById('logo-width-percent').value || 12),
+      logo_margin: Number(document.getElementById('logo-margin').value || 32),
+      auto_logo_overlay_after_batch: document.getElementById('auto-logo-overlay-after-batch').checked,
       ui_base_url: window.location.origin,
       preset_json: presetJson,
       website_logo_path: uploadedLogoPath || null,
-      user_data_dir: "cdp"
+      user_data_dir: "C:/Users/acer/AppData/Local/Google/Chrome/User Data",
+      profile_directory: "Profile 12"
     };
     const resp = await fetch('/api/runs', {
       method: 'POST',

@@ -18,8 +18,9 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from flow_bot.excel_mapper import SCENE_SCHEMA_KEYS, SCHEMA_KEYS, auto_map_headers, build_products, read_rows
 from flow_bot.flow_runner import FlowBot
 from flow_bot.models import RunConfig
+from flow_bot.video_postprocess import overlay_logo_with_ffmpeg
 
-from .schemas import LoginOpenRequest, RunContinueRequest, RunRequest
+from .schemas import LoginOpenRequest, LogoOverlayRequest, RunContinueRequest, RunRequest
 from .state import RunRecord, UploadedDataset, app_state, now_iso
 from .ui import render_home
 
@@ -587,8 +588,95 @@ def get_storage_batch(batch_id: str) -> dict:
     return serialize_batch_manifest(batch_id, batch_dir, manifest)
 
 
+@app.post("/api/storage/batches/{batch_id}/logo-overlay/test")
+def test_storage_batch_logo_overlay(batch_id: str, request: LogoOverlayRequest) -> dict:
+    batch_dir, manifest = load_batch_manifest(batch_id)
+    logo_path = Path(request.logo_file_path).expanduser()
+    if not logo_path.is_absolute():
+        logo_path = (BASE_DIR / logo_path).resolve()
+    if not logo_path.exists() or not logo_path.is_file():
+        raise HTTPException(status_code=400, detail=f"Logo file not found: {logo_path}")
+
+    processed = 0
+    failed = 0
+    for item in manifest.get("items", []):
+        if str(item.get("status") or "").lower() != "completed":
+            continue
+        source_path = resolve_existing_batch_video(batch_dir, item)
+        if source_path is None:
+            continue
+
+        raw_rel = str(item.get("raw_video_file") or "").strip()
+        raw_name = f"item_{parse_storage_item_index(item, processed + failed + 1):04d}_{source_path.name}"
+        raw_path = batch_dir / raw_rel if raw_rel else batch_dir / "raw" / raw_name
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        if not raw_path.exists() or raw_path.resolve() != source_path.resolve():
+            shutil.copyfile(source_path, raw_path)
+
+        final_rel = str(item.get("final_video_file") or f"videos/{raw_path.name}")
+        final_path = batch_dir / final_rel
+        try:
+            overlay_logo_with_ffmpeg(
+                raw_path,
+                logo_path,
+                final_path,
+                position=request.logo_position,
+                logo_width_percent=request.logo_width_percent,
+                margin=request.logo_margin,
+            )
+            item.update(
+                {
+                    "raw_video_file": raw_path.relative_to(batch_dir).as_posix(),
+                    "final_video_file": final_path.relative_to(batch_dir).as_posix(),
+                    "video_file": final_path.relative_to(batch_dir).as_posix(),
+                    "raw_storage_path": raw_path.relative_to(STORAGE_DIR.parent).as_posix(),
+                    "storage_path": final_path.relative_to(STORAGE_DIR.parent).as_posix(),
+                    "logo_overlay_enabled": True,
+                    "logo_overlay_status": "success",
+                    "logo_overlay_error": "",
+                    "logo_position": request.logo_position,
+                    "logo_width_percent": request.logo_width_percent,
+                    "logo_margin": request.logo_margin,
+                }
+            )
+            processed += 1
+        except Exception as exc:
+            item.update(
+                {
+                    "raw_video_file": raw_path.relative_to(batch_dir).as_posix(),
+                    "logo_overlay_enabled": True,
+                    "logo_overlay_status": "failed",
+                    "logo_overlay_error": str(exc),
+                    "logo_position": request.logo_position,
+                    "logo_width_percent": request.logo_width_percent,
+                    "logo_margin": request.logo_margin,
+                }
+            )
+            failed += 1
+
+    manifest["updated_at"] = now_iso()
+    manifest_path = batch_dir / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    payload = serialize_batch_manifest(batch_id, batch_dir, manifest)
+    payload["logo_overlay_processed"] = processed
+    payload["logo_overlay_failed"] = failed
+    return payload
+
+
+@app.get("/api/storage/batches/{batch_id}/subtitles/{filename}")
+def get_storage_batch_subtitle(batch_id: str, filename: str):
+    batch_dir, _ = load_batch_manifest(batch_id)
+    target = (batch_dir / "subtitles" / Path(filename).name).resolve()
+    subtitle_root = (batch_dir / "subtitles").resolve()
+    if subtitle_root not in target.parents and target != subtitle_root:
+        raise HTTPException(status_code=400, detail="Invalid subtitle path.")
+    if not target.exists() or not target.is_file() or target.suffix.lower() != ".srt":
+        raise HTTPException(status_code=404, detail="Subtitle file not found.")
+    return FileResponse(target, filename=target.name, media_type="application/x-subrip")
+
+
 @app.get("/api/storage/batches/{batch_id}/files/{storage_path:path}")
-def get_storage_batch_file(batch_id: str, storage_path: str):
+def get_storage_batch_file(batch_id: str, storage_path: str, resolution: str = Query("original")):
     batch_dir, _ = load_batch_manifest(batch_id)
     target = (STORAGE_DIR / storage_path) if storage_path.startswith("storage/") else (batch_dir / storage_path)
     resolved_target = target.resolve()
@@ -597,13 +685,22 @@ def get_storage_batch_file(batch_id: str, storage_path: str):
         raise HTTPException(status_code=400, detail="Invalid file path.")
     if not resolved_target.exists() or not resolved_target.is_file():
         raise HTTPException(status_code=404, detail="Video file not found.")
-    return FileResponse(resolved_target)
+    target_short_side, _ = parse_zip_resolution(resolution)
+    download_target = resolved_target
+    if target_short_side is not None and resolved_target.suffix.lower() in VIDEO_FILE_SUFFIXES:
+        download_target = upscale_video_for_zip(
+            resolved_target,
+            batch_dir,
+            resolved_target.relative_to(batch_dir),
+            target_short_side,
+        )
+    return FileResponse(download_target, filename=resolved_target.name)
 
 
 @app.get("/api/storage/batches/{batch_id}/zip")
 def download_storage_batch_zip(batch_id: str, resolution: str = Query("1080p")):
     batch_dir, manifest = load_batch_manifest(batch_id)
-    target_height, resolution_label = parse_zip_resolution(resolution)
+    target_short_side, resolution_label = parse_zip_resolution(resolution)
     zip_path = batch_dir / f"{batch_id}-{resolution_label}.zip"
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archived_paths: set[Path] = set()
@@ -616,7 +713,7 @@ def download_storage_batch_zip(batch_id: str, resolution: str = Query("1080p")):
             source_relative_path = file_path.relative_to(batch_dir)
             if source_relative_path in archived_paths:
                 continue
-            archive_path = upscale_video_for_zip(file_path, batch_dir, source_relative_path, target_height)
+            archive_path = upscale_video_for_zip(file_path, batch_dir, source_relative_path, target_short_side)
             archive.write(archive_path, arcname=source_relative_path)
             archived_paths.add(source_relative_path)
     return FileResponse(zip_path, filename=f"{batch_id}.zip", media_type="application/zip")
@@ -640,9 +737,9 @@ def upscale_video_for_zip(
     source_path: Path,
     batch_dir: Path,
     source_relative_path: Path,
-    target_height: int | None,
+    target_short_side: int | None,
 ) -> Path:
-    if target_height is None:
+    if target_short_side is None:
         return source_path
 
     ffmpeg_path = find_ffmpeg_path()
@@ -652,10 +749,20 @@ def upscale_video_for_zip(
             detail="FFmpeg is not available. Install FFmpeg or run: pip install -r requirements.txt",
         )
 
-    target_path = batch_dir / "_upscaled" / f"{target_height}p" / source_relative_path
+    target_long_side = target_short_side * 16 // 9
+    target_path = batch_dir / "_upscaled" / f"{target_short_side}p-canvas" / source_relative_path
     target_path.parent.mkdir(parents=True, exist_ok=True)
     if target_path.exists() and target_path.stat().st_mtime >= source_path.stat().st_mtime:
         return target_path
+
+    canvas_width = f"if(gte(iw,ih),{target_long_side},{target_short_side})"
+    canvas_height = f"if(gte(iw,ih),{target_short_side},{target_long_side})"
+    video_filter = (
+        f"scale=w='{canvas_width}':h='{canvas_height}':"
+        "force_original_aspect_ratio=decrease:flags=lanczos,"
+        f"pad=w='{canvas_width}':h='{canvas_height}':x=(ow-iw)/2:y=(oh-ih)/2:color=black,"
+        "setsar=1"
+    )
 
     command = [
         ffmpeg_path,
@@ -663,7 +770,7 @@ def upscale_video_for_zip(
         "-i",
         str(source_path),
         "-vf",
-        f"scale=-2:{target_height}:flags=lanczos",
+        video_filter,
         "-c:v",
         "libx264",
         "-preset",
@@ -710,6 +817,27 @@ def resolve_batch_storage_path(batch_dir: Path, storage_path: str) -> Path | Non
     return resolved_target
 
 
+def resolve_existing_batch_video(batch_dir: Path, item: dict) -> Path | None:
+    keys = (
+        ("raw_storage_path", "raw_video_file", "storage_path", "final_video_file", "video_file")
+        if item.get("logo_overlay_status") == "success"
+        else ("storage_path", "video_file", "raw_storage_path", "raw_video_file", "final_video_file")
+    )
+    for key in keys:
+        path_value = str(item.get(key) or "").strip()
+        path = resolve_batch_storage_path(batch_dir, path_value)
+        if path is not None and path.suffix.lower() in VIDEO_FILE_SUFFIXES:
+            return path
+    return None
+
+
+def parse_storage_item_index(item: dict, fallback: int) -> int:
+    try:
+        return max(1, int(float(str(item.get("index")))))
+    except (TypeError, ValueError):
+        return fallback
+
+
 def load_batch_manifest(batch_id: str) -> tuple[Path, dict]:
     batch_dir = STORAGE_DIR / batch_id
     manifest_path = batch_dir / "manifest.json"
@@ -723,16 +851,29 @@ def load_batch_manifest(batch_id: str) -> tuple[Path, dict]:
 
 
 def serialize_batch_manifest(batch_id: str, batch_dir: Path, manifest: dict) -> dict:
-    items = []
-    for item in manifest.get("items", []):
-        storage_path = str(item.get("storage_path") or "").strip()
+    def file_url(path_value: object) -> str:
+        storage_path = str(path_value or "").strip()
+        if not storage_path:
+            return ""
         relative_storage_path = storage_path.removeprefix("storage/") if storage_path.startswith("storage/") else storage_path
         if relative_storage_path.startswith(f"{batch_id}/"):
             relative_storage_path = relative_storage_path[len(batch_id) + 1 :]
+        resolved = resolve_batch_storage_path(batch_dir, relative_storage_path)
+        version = int(resolved.stat().st_mtime) if resolved else 0
+        suffix = f"?v={version}" if version else ""
+        return f"/api/storage/batches/{batch_id}/files/{relative_storage_path}{suffix}"
+
+    items = []
+    for item in manifest.get("items", []):
         item_payload = dict(item)
-        item_payload["preview_url"] = (
-            f"/api/storage/batches/{batch_id}/files/{relative_storage_path}" if relative_storage_path else ""
+        item_payload["raw_download_url"] = file_url(item.get("raw_storage_path") or item.get("raw_video_file"))
+        item_payload["final_download_url"] = file_url(item.get("storage_path") or item.get("final_video_file"))
+        subtitle_file = str(item.get("subtitle_file") or "").strip()
+        subtitle_name = Path(subtitle_file).name if subtitle_file else ""
+        item_payload["subtitle_download_url"] = (
+            f"/api/storage/batches/{batch_id}/subtitles/{subtitle_name}" if subtitle_name else ""
         )
+        item_payload["preview_url"] = item_payload["final_download_url"] or item_payload["raw_download_url"]
         item_payload["download_url"] = item_payload["preview_url"]
         items.append(item_payload)
 
@@ -792,6 +933,19 @@ def run_bot_job(record: RunRecord, dataset: UploadedDataset, payload: RunRequest
             auto_restart=payload.auto_restart,
             continue_on_video_failure=payload.continue_on_video_failure,
             scene_mode=payload.scene_mode,
+            video_model=payload.video_model,
+            enable_logo_overlay=payload.enable_logo_overlay,
+            logo_file_path=payload.logo_file_path,
+            logo_position=payload.logo_position,
+            logo_width_percent=payload.logo_width_percent,
+            logo_margin=payload.logo_margin,
+            strict_logo_overlay=payload.strict_logo_overlay,
+            auto_logo_overlay_after_batch=payload.auto_logo_overlay_after_batch,
+            enable_subtitles=payload.enable_subtitles,
+            subtitle_source=payload.subtitle_source,
+            subtitle_position=payload.subtitle_position,
+            subtitle_font_size=payload.subtitle_font_size,
+            subtitle_style=payload.subtitle_style,
             scene_field_keys=scene_field_keys,
             merge_after_group_complete=payload.merge_after_group_complete,
             keep_browser_open=payload.keep_browser_open,

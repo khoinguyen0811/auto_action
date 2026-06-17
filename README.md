@@ -102,27 +102,38 @@ python -m uvicorn fastapi_app.main:app --host 127.0.0.1 --port 8000
 2. Mở Chrome bằng remote debugging trước khi bấm `Run Bot`.
 
 ```powershell
-chrome.exe --remote-debugging-port=9222 --user-data-dir="C:\Users\YOUR_USER\AppData\Local\Google\Chrome\User Data" --profile-directory="Profile 12" "https://labs.google/fx/vi/tools/flow/project/f59c99c2-23b5-44a8-b9c7-e89f1fd6a39e/tool/f5f0a297-5a81-48b0-bcec-e4a6e63ec4d9"
+"/c/Program Files/Google/Chrome/Application/chrome.exe" \
+  --remote-debugging-port=9222 \
+  --user-data-dir="C:\Users\acer\AppData\Local\Google\Chrome\User Data" \
+  --profile-directory="Profile 12" \
+  "https://labs.google/fx/vi/tools/flow/project/f59c99c2-23b5-44a8-b9c7-e89f1fd6a39e/tool/f5f0a297-5a81-48b0-bcec-e4a6e63ec4d9"
+
 ```
 
 3. Mở `http://127.0.0.1:8000/`.
 4. Ở `Upload Excel / CSV`, chọn file rồi bấm `Upload File`.
 5. Ở `Field Mapping`, kiểm tra mapping cho:
+
 - `product_name`
 - `short_description`
 - `long_description`
 - `product_image` nếu có
+
 6. Nếu dùng preset, vào `Preset Import`:
+
 - paste JSON hoặc import file `.json`
 - trường `website_logo` trong preset sẽ tự bị bỏ qua
 - nếu có logo website riêng thì upload bằng `Upload Logo`
+
 7. Ở `Batch Settings`, kiểm tra:
+
 - `Dataset ID`
 - `CDP Port`
 - `Start Product`
 - `Product Count`
 - `Slow Mo`
 - `Video Timeout`
+
 8. Bấm `Run Bot`.
 9. Theo dõi log trong tab `Realtime Log` và toast log trên website mà bot đang thao tác.
 

@@ -47,7 +47,7 @@ class RunConfig:
     sheet_name: Optional[str] = None
     start_index: int = 0
     limit: Optional[int] = None
-    flow_url: str = "https://labs.google/fx/vi/tools/flow/project/f59c99c2-23b5-44a8-b9c7-e89f1fd6a39e/tool/f5f0a297-5a81-48b0-bcec-e4a6e63ec4d9"
+    flow_url: str = "https://labs.google/fx/vi/tools/flow/project/29290e6e-cefb-45dc-bb4a-7d536bf5b33f/tool/fd2e21f2-9304-4ec9-8026-866a0672264c"
     auth_state_path: Path = Path("playwright/.auth/flow.json")
     chrome_user_data_dir: Optional[Path] = None
     chrome_profile_directory: Optional[str] = None

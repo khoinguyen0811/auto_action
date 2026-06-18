@@ -13,7 +13,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--flow-url", default="https://labs.google/fx/vi/tools/flow/project/f59c99c2-23b5-44a8-b9c7-e89f1fd6a39e/tool/f5f0a297-5a81-48b0-bcec-e4a6e63ec4d9")
+    common.add_argument("--flow-url", default="https://labs.google/fx/vi/tools/flow/project/29290e6e-cefb-45dc-bb4a-7d536bf5b33f/tool/fd2e21f2-9304-4ec9-8026-866a0672264c")
     common.add_argument("--auth-state", default="playwright/.auth/flow.json")
     common.add_argument("--user-data-dir", help="Chrome User Data directory for persistent profile mode")
     common.add_argument("--profile-directory", help="Chrome profile directory name, e.g. Default or Profile 1")

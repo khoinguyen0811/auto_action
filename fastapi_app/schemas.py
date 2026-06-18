@@ -66,7 +66,7 @@ class RunRequest(BaseModel):
 class LoginOpenRequest(BaseModel):
     headless: bool = False
     slow_mo: int = Field(default=350, ge=0, le=5000)
-    flow_url: str = "https://labs.google/fx/vi/tools/flow/project/f59c99c2-23b5-44a8-b9c7-e89f1fd6a39e/tool/f5f0a297-5a81-48b0-bcec-e4a6e63ec4d9"
+    flow_url: str = "https://labs.google/fx/vi/tools/flow/project/29290e6e-cefb-45dc-bb4a-7d536bf5b33f/tool/fd2e21f2-9304-4ec9-8026-866a0672264c"
     user_data_dir: str | None = None
     profile_directory: str | None = None
     cdp_port: int = 9222

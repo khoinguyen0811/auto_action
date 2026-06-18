@@ -6,6 +6,9 @@ from typing import Callable, Literal, Optional
 
 
 SceneMode = Literal["manual_pause", "skip", "auto_excel"]
+MultiClipMode = Literal["off", "auto", "2", "3"]
+SceneBuilderMode = Literal["native_flow", "bot_merge", "off"]
+DownloadMode = Literal["capture_only", "save_local", "save_local_and_zip"]
 VideoModel = Literal[
     "auto",
     "Omni Flash",
@@ -69,6 +72,7 @@ class RunConfig:
     continue_on_video_failure: bool = False
     scene_mode: SceneMode = "skip"
     video_model: VideoModel = "Veo 3.1 - Lite"
+    aspect_ratio: str = "9:16"
     enable_logo_overlay: bool = True
     logo_file_path: Optional[str] = None
     logo_position: str = "top-right"
@@ -81,8 +85,24 @@ class RunConfig:
     subtitle_position: str = "bottom"
     subtitle_font_size: int = 18
     subtitle_style: str = "clean"
+    enable_product_image_cleanup: bool = True
+    cleanup_mode: str = "auto"
+    cleanup_background: str = "transparent"
+    cleanup_sharpen: bool = True
+    cleanup_white_background_fallback: bool = True
+    cleanup_cache_enabled: bool = True
+    enable_flow_product_cleanup: bool = True
+    flow_product_cleanup_timeout_ms: int = 120_000
+    max_upload_dialog_retries: int = 3
+    max_page_refresh_retries: int = 1
+    max_browser_reconnect_retries: int = 3
     scene_field_keys: tuple[str, ...] = ()
     merge_after_group_complete: bool = False
+    multi_clip_mode: MultiClipMode = "auto"
+    scene_builder_mode: SceneBuilderMode = "native_flow"
+    target_final_duration: int = 20
+    download_mode: DownloadMode = "save_local"
+    max_generate_retries: int = 1
     manual_scene_pause_timeout_ms: int = 1_800_000
     wait_for_manual_scene_continue: Optional[Callable[[int], bool]] = None
     notify_manual_scene_pause: Optional[Callable[[bool, str], None]] = None

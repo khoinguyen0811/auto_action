@@ -675,6 +675,24 @@ def get_storage_batch_subtitle(batch_id: str, filename: str):
     return FileResponse(target, filename=target.name, media_type="application/x-subrip")
 
 
+@app.get("/api/storage/batches/{batch_id}/clips/{scene_group_id}/zip")
+def download_storage_batch_clips_zip(batch_id: str, scene_group_id: str):
+    batch_dir, _ = load_batch_manifest(batch_id)
+    safe_group = Path(scene_group_id).name
+    clips_dir = (batch_dir / "clips" / safe_group).resolve()
+    clips_root = (batch_dir / "clips").resolve()
+    if clips_root not in clips_dir.parents and clips_dir != clips_root:
+        raise HTTPException(status_code=400, detail="Invalid clip group path.")
+    if not clips_dir.exists() or not clips_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Clip group not found.")
+    zip_path = batch_dir / f"{safe_group}-clips.zip"
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for source in sorted(clips_dir.iterdir()):
+            if source.is_file() and source.name != "manifest.json":
+                archive.write(source, arcname=source.name)
+    return FileResponse(zip_path, filename=f"{safe_group}-clips.zip", media_type="application/zip")
+
+
 @app.get("/api/storage/batches/{batch_id}/files/{storage_path:path}")
 def get_storage_batch_file(batch_id: str, storage_path: str, resolution: str = Query("original")):
     batch_dir, _ = load_batch_manifest(batch_id)
@@ -868,6 +886,14 @@ def serialize_batch_manifest(batch_id: str, batch_dir: Path, manifest: dict) -> 
         item_payload = dict(item)
         item_payload["raw_download_url"] = file_url(item.get("raw_storage_path") or item.get("raw_video_file"))
         item_payload["final_download_url"] = file_url(item.get("storage_path") or item.get("final_video_file"))
+        clip_payloads = []
+        for clip in item.get("clips", []) if isinstance(item.get("clips"), list) else []:
+            clip_item = dict(clip)
+            clip_item["download_url"] = file_url(clip.get("video_file"))
+            clip_item["last_frame_url"] = file_url(clip.get("last_frame"))
+            clip_payloads.append(clip_item)
+        item_payload["clips"] = clip_payloads
+        item_payload["native_scene_download_url"] = file_url(item.get("native_scene_file"))
         subtitle_file = str(item.get("subtitle_file") or "").strip()
         subtitle_name = Path(subtitle_file).name if subtitle_file else ""
         item_payload["subtitle_download_url"] = (
@@ -931,9 +957,10 @@ def run_bot_job(record: RunRecord, dataset: UploadedDataset, payload: RunRequest
             auto_next=payload.auto_next,
             auto_generate=payload.auto_generate,
             auto_restart=payload.auto_restart,
-            continue_on_video_failure=payload.continue_on_video_failure,
+            continue_on_video_failure=payload.continue_on_video_failure or payload.continue_on_error,
             scene_mode=payload.scene_mode,
             video_model=payload.video_model,
+            aspect_ratio=payload.aspect_ratio,
             enable_logo_overlay=payload.enable_logo_overlay,
             logo_file_path=payload.logo_file_path,
             logo_position=payload.logo_position,
@@ -946,8 +973,22 @@ def run_bot_job(record: RunRecord, dataset: UploadedDataset, payload: RunRequest
             subtitle_position=payload.subtitle_position,
             subtitle_font_size=payload.subtitle_font_size,
             subtitle_style=payload.subtitle_style,
+            enable_product_image_cleanup=payload.enable_product_image_cleanup,
+            cleanup_mode=payload.cleanup_mode,
+            cleanup_background=payload.cleanup_background,
+            cleanup_sharpen=payload.cleanup_sharpen,
+            cleanup_white_background_fallback=payload.cleanup_white_background_fallback,
+            cleanup_cache_enabled=payload.cleanup_cache_enabled,
+            max_upload_dialog_retries=payload.max_upload_dialog_retries,
+            max_page_refresh_retries=payload.max_page_refresh_retries,
+            max_browser_reconnect_retries=payload.max_browser_reconnect_retries,
             scene_field_keys=scene_field_keys,
             merge_after_group_complete=payload.merge_after_group_complete,
+            multi_clip_mode=payload.multi_clip_mode,
+            scene_builder_mode=payload.scene_builder_mode,
+            target_final_duration=payload.target_final_duration,
+            download_mode=payload.download_mode,
+            max_generate_retries=payload.max_generate_retries,
             keep_browser_open=payload.keep_browser_open,
             preset_json=payload.preset_json,
             website_logo_path=Path(payload.website_logo_path) if payload.website_logo_path else None,

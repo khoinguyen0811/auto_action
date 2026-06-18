@@ -48,7 +48,51 @@ def build_parser() -> argparse.ArgumentParser:
         ],
         help="Video model to select on Step 2 before Brainstorm.",
     )
+    run.add_argument(
+        "--aspect-ratio",
+        default="9:16",
+        choices=["9:16", "16:9", "1:1"],
+        help="Aspect ratio to select in the Flow tool when available.",
+    )
     run.add_argument("--continue-on-video-failure", action="store_true")
+    run.add_argument(
+        "--multi-clip-mode",
+        default="auto",
+        choices=["off", "auto", "2", "3"],
+        help="Generate one final product video from 2-3 connected clips, or keep single-video mode with off.",
+    )
+    run.add_argument(
+        "--scene-builder-mode",
+        default="native_flow",
+        choices=["native_flow", "bot_merge", "off"],
+        help="Use Flow Scenebuilder when available, bot-side FFmpeg merge, or no scene builder.",
+    )
+    run.add_argument(
+        "--target-final-duration",
+        type=int,
+        default=20,
+        choices=[15, 20, 24, 30],
+        help="Target total duration for multi-clip final videos.",
+    )
+    run.add_argument(
+        "--download-mode",
+        default="save_local",
+        choices=["capture_only", "save_local", "save_local_and_zip"],
+        help="How generated videos should be captured and saved.",
+    )
+    run.add_argument(
+        "--max-generate-retries",
+        type=int,
+        default=1,
+        help="Retry count for each failed clip generation.",
+    )
+    run.add_argument("--no-product-image-cleanup", action="store_true")
+    run.add_argument(
+        "--cleanup-mode",
+        default="auto",
+        choices=["auto", "remove_background", "sharpen_only", "none"],
+        help="Product image cleanup mode before upload.",
+    )
     run.add_argument("--keep-browser-open", action="store_true")
 
     return parser
@@ -72,7 +116,15 @@ def build_config(args: argparse.Namespace) -> RunConfig:
         auto_generate=not getattr(args, "no_auto_generate", False),
         auto_restart=not getattr(args, "no_auto_restart", False),
         video_model=getattr(args, "video_model", "Veo 3.1 - Lite"),
+        aspect_ratio=getattr(args, "aspect_ratio", "9:16"),
         continue_on_video_failure=getattr(args, "continue_on_video_failure", False),
+        multi_clip_mode=getattr(args, "multi_clip_mode", "auto"),
+        scene_builder_mode=getattr(args, "scene_builder_mode", "native_flow"),
+        target_final_duration=getattr(args, "target_final_duration", 20),
+        download_mode=getattr(args, "download_mode", "save_local"),
+        max_generate_retries=max(0, getattr(args, "max_generate_retries", 1)),
+        enable_product_image_cleanup=not getattr(args, "no_product_image_cleanup", False),
+        cleanup_mode=getattr(args, "cleanup_mode", "auto"),
         keep_browser_open=getattr(args, "keep_browser_open", False),
     )
 

@@ -30,9 +30,11 @@ from playwright.sync_api import (
 from .models import ProductRow, RunConfig
 from .video_postprocess import (
     burn_subtitles_with_ffmpeg,
+    find_ffmpeg_path,
     generate_srt,
     get_video_duration_seconds,
     overlay_logo_with_ffmpeg,
+    seconds_to_srt_time,
 )
 
 
@@ -63,6 +65,8 @@ class FlowBot:
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
         self.config.temp_dir.mkdir(parents=True, exist_ok=True)
         self.config.auth_state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.current_image_cleanup_result: dict[str, str] = {}
+        self.last_browser_health_check = 0.0
 
     def __enter__(self) -> "FlowBot":
         self.start()
@@ -655,6 +659,77 @@ class FlowBot:
             self.emit_log(f"Network idle timeout: {exc}", "WARNING")
         self.page.bring_to_front()
 
+    def ensure_browser_alive(self, force: bool = False) -> None:
+        now = time.time()
+        if not force and now - self.last_browser_health_check < 10:
+            return
+        self.last_browser_health_check = now
+        page_closed = True
+        with suppress(Exception):
+            page_closed = self.page is None or self.page.is_closed()
+        if not page_closed:
+            return
+        self.emit_log("Browser/page appears closed. Attempting recovery...", "WARNING")
+        self.recover_browser_session()
+
+    def recover_browser_session(self) -> None:
+        last_error: Exception | None = None
+        attempts = max(0, self.config.max_browser_reconnect_retries)
+        for attempt in range(1, attempts + 1):
+            try:
+                self.emit_log(f"Browser reconnect attempt {attempt}/{attempts}...", "WARNING")
+                if self.config.chrome_user_data_dir:
+                    port = self.cdp_port or self.config.cdp_port
+                    if not self.is_cdp_ready(port):
+                        self.launch_chrome_for_cdp(port)
+                    self.wait_for_cdp_ready(port, timeout_ms=30_000)
+                    assert self.playwright is not None
+                    self.browser = self.connect_over_cdp_retry(port, attempts=2)
+                    self.context = (
+                        self.browser.contexts[0]
+                        if self.browser.contexts
+                        else self.browser.new_context()
+                    )
+                    self.page = self.first_open_page_or_new()
+                else:
+                    if self.browser is None:
+                        assert self.playwright is not None
+                        self.browser = self.playwright.chromium.launch(
+                            headless=self.config.headless,
+                            slow_mo=self.config.slow_mo_ms,
+                            channel=self.config.channel,
+                        )
+                    if self.context is None:
+                        context_kwargs: dict = {
+                            "viewport": {"width": 1500, "height": 1000},
+                            "ignore_https_errors": True,
+                        }
+                        if self.config.auth_state_path.exists():
+                            context_kwargs["storage_state"] = self.config.auth_state_path.as_posix()
+                        self.context = self.browser.new_context(**context_kwargs)
+                    self.page = self.context.new_page()
+
+                assert self.page is not None
+                self.page.goto(self.config.flow_url, wait_until="load", timeout=60_000)
+                with suppress(Exception):
+                    self.page.wait_for_load_state("networkidle", timeout=15_000)
+                self.page.bring_to_front()
+                self.emit_log("Browser recovery succeeded.", "SUCCESS")
+                return
+            except Exception as exc:
+                last_error = exc
+                self.emit_log(f"Browser reconnect attempt failed: {exc}", "WARNING")
+                self.sleep_ms(2_000)
+        raise RuntimeError(f"Browser recovery failed after {attempts} attempts: {last_error}")
+
+    def first_open_page_or_new(self) -> Page:
+        assert self.context is not None
+        for page in self.context.pages:
+            with suppress(Exception):
+                if not page.is_closed():
+                    return page
+        return self.context.new_page()
+
     # ════════════════════════════════════════════════════════
     # BATCH / SINGLE PRODUCT ORCHESTRATION
     # ════════════════════════════════════════════════════════
@@ -709,6 +784,15 @@ class FlowBot:
                     f"  [SP {current}/{total}] ✗ Thất bại: {exc}",
                     "ERROR",
                 )
+                if self.config.continue_on_video_failure:
+                    self.emit_log(
+                        f"  [SP {current}/{total}] Continuing with next product after failure.",
+                        "WARNING",
+                    )
+                    with suppress(Exception):
+                        if self.config.auto_restart:
+                            self.wait_for_create_next_product(45_000)
+                    continue
                 raise
         self.emit_log(
             f"═══════════════════════════════════════",
@@ -741,6 +825,7 @@ class FlowBot:
           Post    → wait for create-next-product, click it, wait for Step 1
         """
         tag = f"[SP {current}/{total}]"
+        self.current_image_cleanup_result = {}
 
         # ── Step 1: product form ─────────────────────────────
         self.emit_log(f"{tag} Step 1 — Đang chờ giao diện sẵn sàng...")
@@ -752,8 +837,11 @@ class FlowBot:
         self.fill_text_fields(frame, product)
         if product.product_image:
             self.emit_log(f"{tag} Step 1 — Upload ảnh sản phẩm...")
-            image_path = self.download_image(product.product_image, index)
-            self.upload_image(frame, image_path)
+            original_image_path = self.download_image(product.product_image, index)
+            upload_image_path = self.clean_product_image(original_image_path, product, index)
+            frame = self.upload_image(frame, upload_image_path, product=product)
+            self.clean_uploaded_product_image_in_flow(frame, product=product)
+        self.configure_multi_clip_flow_settings(frame)
         self.sleep_ms(self.config.extra_wait_after_fill_ms)
 
         # ── Step 1 → Step 2 ──────────────────────────────────
@@ -774,6 +862,13 @@ class FlowBot:
         self.wait_for_generate_video_step(frame, timeout_ms=120_000)
 
         # ── Step 3: generate video ───────────────────────────
+        if self.config.auto_generate and self.config.multi_clip_mode != "off":
+            self.run_multi_clip_product(frame, product, index, current, total)
+            if self.config.auto_restart:
+                self.emit_log(f"{tag} Post â€” Äang chá» nÃºt Táº¡o sáº£n pháº©m tiáº¿p theo...")
+                self.wait_for_create_next_product(self.config.wait_timeout_ms)
+            return
+
         if self.config.auto_generate:
             self.emit_log(f"{tag} Step 3 — Nhấn Generate Video...")
             self.click_generate(frame)
@@ -988,8 +1083,20 @@ class FlowBot:
 
         self.emit_log("Waiting for brainstorm to finish and generate-video to appear...")
         while time.time() < deadline:
+            self.ensure_browser_alive()
+            frame = self.refresh_frame_reference(frame)
+            brainstorm_status = self.read_flow_output_text("brainstorm-status").strip().lower()
+            brainstorm_ready = self.read_flow_output_text("brainstorm-ready").strip().lower()
+            generate_ready = self.read_flow_output_text("generate-video-ready").strip().lower()
+            if brainstorm_status in {"failed", "error"} or "failed" in brainstorm_status:
+                raise RuntimeError("Brainstorm failed before video generation became ready.")
             btn = self.find_generate_button(frame)
-            if btn is not None:
+            output_ready = generate_ready in {"true", "1", "yes", "ready", "completed"}
+            brainstorm_done = (
+                brainstorm_status in {"completed", "done", "success"}
+                or brainstorm_ready in {"true", "1", "yes", "ready"}
+            )
+            if output_ready or (btn is not None and (brainstorm_done or not brainstorm_status)):
                 self.emit_log("Generate video step is ready.", "SUCCESS")
                 return
 
@@ -1015,7 +1122,7 @@ class FlowBot:
 
     def find_generate_button(self, frame: Frame) -> Optional[Locator]:
         """Return the generate-video button if visible and enabled, else None."""
-        return self.find_button_by_selectors_or_text(
+        button = self.find_button_by_selectors_or_text(
             frame,
             selectors=[
                 '[data-flow-action="generate-video"]',
@@ -1031,6 +1138,30 @@ class FlowBot:
                 r"\bgenerate\b",
             ],
         )
+        if button is not None:
+            return button
+        for scope in self.iter_page_and_frame_scopes():
+            if scope == frame:
+                continue
+            button = self.find_button_by_selectors_or_text(
+                scope,
+                selectors=[
+                    '[data-flow-action="generate-video"]',
+                    '[data-flow-field="generate-video"]',
+                ],
+                patterns=[
+                    r"generate video",
+                    r"dá»±ng video",
+                    r"dung video",
+                    r"táº¡o video",
+                    r"tao video",
+                    r"create video",
+                    r"\bgenerate\b",
+                ],
+            )
+            if button is not None:
+                return button
+        return None
 
     def click_generate(self, frame: Frame) -> None:
         self.emit_log("Looking for generate video button...")
@@ -1040,6 +1171,763 @@ class FlowBot:
             raise RuntimeError("Generate video button not found.")
         btn.click()
         self.emit_log("Clicked generate video.", "SUCCESS")
+
+    def configure_multi_clip_flow_settings(self, frame: Frame) -> None:
+        settings = {
+            "video-model": self.config.video_model,
+            "aspect-ratio": self.config.aspect_ratio,
+            "multi-clip-mode": self.config.multi_clip_mode,
+            "scene-builder-mode": self.config.scene_builder_mode,
+            "target-final-duration": str(self.config.target_final_duration),
+        }
+        for field_name, value in settings.items():
+            if self.select_flow_field_value(frame, field_name, value):
+                self.emit_log(f"Selected Flow {field_name}: {value}", "INFO")
+            else:
+                self.emit_log(f"Flow selector not found for {field_name}; continuing.", "WARNING")
+
+    def select_flow_field_value(self, frame: Frame, field_name: str, value: str) -> bool:
+        selectors = [
+            f'select[data-flow-field="{field_name}"]',
+            f'[data-flow-field="{field_name}"] select',
+            f'[data-flow-field="{field_name}"]',
+        ]
+        locator = self.find_visible_by_selector(frame, selectors)
+        if locator is None:
+            for selector in selectors:
+                locator = self.find_in_all_frames(selector)
+                if locator is not None:
+                    break
+        if locator is None:
+            return False
+        with suppress(Exception):
+            locator.scroll_into_view_if_needed()
+        with suppress(Exception):
+            tag_name = (locator.evaluate("(el) => el.tagName") or "").lower()
+            if tag_name != "select":
+                nested = self.find_visible_by_selector(locator, ["select"])
+                if nested is not None:
+                    locator = nested
+        option_tokens = self.flow_option_tokens(field_name, value)
+        for option in ({"value": value}, {"label": value}):
+            with suppress(Exception):
+                locator.select_option(**option)
+                locator.dispatch_event("input")
+                locator.dispatch_event("change")
+                return True
+        with suppress(Exception):
+            selected = locator.evaluate(
+                """(select, payload) => {
+                    const { targetValue, optionTokens } = payload;
+                    const option = Array.from(select.options || []).find((item) =>
+                        item.value === targetValue
+                        || item.textContent.trim() === targetValue
+                        || optionTokens.includes(item.getAttribute("data-flow-option") || "")
+                    );
+                    if (!option) return false;
+                    select.value = option.value;
+                    select.dispatchEvent(new Event("input", { bubbles: true }));
+                    select.dispatchEvent(new Event("change", { bubbles: true }));
+                    return true;
+                }""",
+                {"targetValue": value, "optionTokens": option_tokens},
+            )
+            return bool(selected)
+        for token in option_tokens:
+            option_locator = self.find_in_all_frames(f'[data-flow-option="{token}"]')
+            if option_locator is not None:
+                with suppress(Exception):
+                    locator.click()
+                with suppress(Exception):
+                    option_locator.click()
+                    return True
+        return False
+
+    def flow_option_tokens(self, field_name: str, value: str) -> list[str]:
+        normalized = str(value or "").strip().lower()
+        tokens_by_field = {
+            "video-model": {
+                "veo 3.1 - lite": "video-model-veo31-lite",
+                "veo 3.1 - fast": "video-model-veo31-fast",
+                "veo 3.1 - quality": "video-model-veo31-quality",
+                "omni flash": "video-model-gemini-omni-flash",
+                "gemini omni flash": "video-model-gemini-omni-flash",
+            },
+            "aspect-ratio": {
+                "9:16": "aspect-ratio-9-16",
+                "9-16": "aspect-ratio-9-16",
+                "16:9": "aspect-ratio-16-9",
+                "16-9": "aspect-ratio-16-9",
+                "1:1": "aspect-ratio-1-1",
+                "1-1": "aspect-ratio-1-1",
+            },
+            "multi-clip-mode": {
+                "2": "multi-clip-2",
+                "3": "multi-clip-3",
+                "auto": "multi-clip-auto",
+                "off": "multi-clip-off",
+            },
+            "scene-builder-mode": {
+                "native_flow": "scene-builder-native-flow",
+                "native-flow": "scene-builder-native-flow",
+                "bot_merge": "scene-builder-bot-merge",
+                "bot-merge": "scene-builder-bot-merge",
+                "off": "scene-builder-off",
+            },
+        }
+        token = tokens_by_field.get(field_name, {}).get(normalized)
+        return [token] if token else []
+
+    def run_multi_clip_product(
+        self,
+        frame: Frame,
+        product: ProductRow,
+        index: int,
+        current: int,
+        total: int,
+    ) -> None:
+        self.emit_log("Multi-clip mode enabled.", "INFO")
+        plan = self.read_clip_plan(frame)
+        if not plan:
+            plan = self.build_fallback_clip_plan(product, self.config.video_model, self.config.target_final_duration)
+        plan = self.normalize_clip_plan_for_mode(plan, product)
+        self.emit_log(f"Clip plan loaded: {len(plan)} clips.", "SUCCESS")
+
+        scene_group_id = self.multi_clip_scene_group_id(product, index)
+        batch_dir = self.batch_storage_dir()
+        clips_dir = batch_dir / "clips" / scene_group_id
+        final_dir = batch_dir / "final"
+        clips_dir.mkdir(parents=True, exist_ok=True)
+        final_dir.mkdir(parents=True, exist_ok=True)
+
+        clip_results: list[dict] = []
+        clip_paths: list[Path] = []
+        last_frame_path: Path | None = None
+        scene_id = ""
+        scene_clip_list = ""
+        previous_video_url = ""
+        previous_video_download_data = ""
+        status = "completed"
+        error = ""
+
+        for clip_index, clip in enumerate(plan, start=1):
+            clip_role = self.slugify(str(clip.get("clip_role") or clip.get("role") or f"clip_{clip_index}")) or f"clip_{clip_index}"
+            self.emit_log(f"Generating clip {clip_index}/{len(plan)}: {clip_role}", "INFO")
+            if clip_index > 1 and last_frame_path is not None:
+                if self.upload_start_frame(frame, last_frame_path):
+                    self.emit_log(f"Uploaded start frame for clip {clip_index}.", "SUCCESS")
+                else:
+                    self.emit_log(
+                        f"Could not upload start frame for clip {clip_index}; continuing with product image reference.",
+                        "WARNING",
+                    )
+
+            max_attempts = max(1, int(self.config.max_generate_retries) + 1)
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    if attempt > 1:
+                        self.emit_log(f"Retrying clip {clip_index} ({attempt}/{max_attempts})...", "WARNING")
+                    self.click_generate_for_clip(frame, clip_index)
+                    clip_metadata = {
+                        "multi_clip": True,
+                        "clip_total": len(plan),
+                        "clip_index": clip_index,
+                        "clip_role": clip_role,
+                        "clip_duration": clip.get("duration", ""),
+                        "scene_group_id": scene_group_id,
+                        "scene_number": clip_index,
+                        "scene_total": len(plan),
+                        "scene_role": clip_role,
+                        "scene_title": f"{product.product_name} - {clip_role}",
+                    }
+                    result = self.wait_for_video_completed_and_capture(
+                        product,
+                        index,
+                        clip_metadata=clip_metadata,
+                        previous_video_url=previous_video_url,
+                        previous_video_download_data=previous_video_download_data,
+                    )
+                    if str(result.get("status") or "").lower() != "completed":
+                        raise RuntimeError(result.get("error") or f"Clip {clip_index} failed.")
+
+                    clip_path = clips_dir / f"clip_{clip_index:02d}_{clip_role}.mp4"
+                    video_bytes = self.resolve_video_bytes(result)
+                    if video_bytes is not None:
+                        clip_path.write_bytes(video_bytes)
+                    elif not self.try_download_video_button(frame, clip_path):
+                        raise RuntimeError(f"Could not download clip {clip_index} video bytes.")
+                    result["batch_id"] = self.batch_id()
+                    result["clip_video_file"] = clip_path.relative_to(batch_dir).as_posix()
+                    result["video_file"] = result["clip_video_file"]
+                    result["raw_video_file"] = result["clip_video_file"]
+                    result["storage_path"] = clip_path.relative_to(self.config.output_dir).as_posix()
+                    self.emit_log(f"Saved clip {clip_index}.", "SUCCESS")
+
+                    last_frame_path = clips_dir / f"last_frame_{clip_index:02d}.png"
+                    if not self.capture_last_frame_from_flow(frame, clip_index, last_frame_path):
+                        if not self.extract_last_frame_ffmpeg(clip_path, last_frame_path):
+                            self.emit_log(f"Could not capture last frame for clip {clip_index}.", "WARNING")
+                            last_frame_path = None
+                    if last_frame_path is not None and last_frame_path.exists():
+                        result["last_frame_file"] = last_frame_path.relative_to(batch_dir).as_posix()
+                        self.emit_log(f"Captured last frame for clip {clip_index}.", "SUCCESS")
+
+                    if self.config.scene_builder_mode == "native_flow":
+                        if self.add_clip_to_native_scene(frame):
+                            self.emit_log("Added clip to native Flow scene.", "SUCCESS")
+                        scene_id = self.read_flow_output_text("scene-id") or scene_id
+                        scene_clip_list = self.read_flow_output_text("scene-clip-list") or scene_clip_list
+
+                    previous_video_url = str(result.get("video_url") or "")
+                    previous_video_download_data = str(result.get("video_download_data") or "")
+                    clip_results.append(result)
+                    clip_paths.append(clip_path)
+                    break
+                except Exception as exc:
+                    if attempt < max_attempts:
+                        self.emit_log(f"Clip {clip_index} attempt {attempt} failed: {exc}", "WARNING")
+                        self.sleep_ms(1_500)
+                        continue
+                    status = "failed"
+                    error = str(exc)
+                    self.emit_log(f"Clip {clip_index} failed: {exc}", "ERROR")
+            if status == "failed":
+                break
+
+        final_video_file = ""
+        native_scene_file = ""
+        merge_method = ""
+        postprocess_result: dict = {}
+        raw_final_path = final_dir / f"{scene_group_id}_raw.mp4"
+        final_path = final_dir / f"{scene_group_id}_final.mp4"
+
+        if status == "completed":
+            if self.config.scene_builder_mode == "native_flow":
+                native_target = final_dir / f"{scene_group_id}_native.mp4"
+                self.wait_for_scene_finished(timeout_ms=60_000)
+                if self.try_download_native_scene(frame, native_target):
+                    raw_final_path = native_target
+                    native_scene_file = native_target.relative_to(batch_dir).as_posix()
+                    merge_method = "native_flow/download_scene"
+                else:
+                    self.emit_log("Native scene download failed; using FFmpeg merge.", "WARNING")
+
+            if not raw_final_path.exists():
+                if self.merge_clips_ffmpeg(clip_paths, raw_final_path):
+                    merge_method = merge_method or "ffmpeg_concat"
+                    self.emit_log("Final merged video saved.", "SUCCESS")
+                else:
+                    status = "failed"
+                    error = "FFmpeg merge failed."
+
+            if status == "completed":
+                base_row = self.multi_clip_base_row(
+                    product,
+                    index,
+                    scene_group_id,
+                    clip_results,
+                    raw_final_path,
+                    final_path,
+                    native_scene_file,
+                    scene_id,
+                    merge_method,
+                )
+                postprocess_result = self.create_final_video_with_postprocessing(raw_final_path, final_path, base_row)
+                base_row.update(postprocess_result)
+                final_video_file = final_path.relative_to(batch_dir).as_posix() if final_path.exists() else raw_final_path.relative_to(batch_dir).as_posix()
+                for result in clip_results:
+                    result["final_video_file"] = final_video_file
+                    result["scene_id"] = scene_id
+                    result["merge_method"] = merge_method
+                    self.append_video_result_csv(result)
+                self.persist_multi_clip_product_manifest(
+                    batch_dir=batch_dir,
+                    product=product,
+                    index=index,
+                    scene_group_id=scene_group_id,
+                    clip_results=clip_results,
+                    scene_id=scene_id,
+                    scene_clip_list=scene_clip_list,
+                    native_scene_file=native_scene_file,
+                    final_video_file=final_video_file,
+                    merge_method=merge_method,
+                    status=status,
+                    error=error,
+                    postprocess_result=postprocess_result,
+                )
+                return
+
+        self.persist_multi_clip_product_manifest(
+            batch_dir=batch_dir,
+            product=product,
+            index=index,
+            scene_group_id=scene_group_id,
+            clip_results=clip_results,
+            scene_id=scene_id,
+            scene_clip_list=scene_clip_list,
+            native_scene_file=native_scene_file,
+            final_video_file=final_video_file,
+            merge_method=merge_method,
+            status=status,
+            error=error,
+            postprocess_result=postprocess_result,
+        )
+        for result in clip_results:
+            result["final_video_file"] = final_video_file
+            result["scene_id"] = scene_id
+            result["merge_method"] = merge_method
+            result["status"] = result.get("status") or status
+            result["error"] = result.get("error") or error
+            self.append_video_result_csv(result)
+        raise RuntimeError(error or "Multi-clip product failed.")
+
+    def click_generate_for_clip(self, frame: Frame, clip_index: int) -> None:
+        selectors = (
+            [
+                '[data-flow-action="generate-next-scene-clip"]',
+                '[data-flow-action="generate-next-clip"]',
+                '[data-flow-field="generate-next-clip"]',
+                '[data-flow-action="generate-video"]',
+                '[data-flow-field="generate-video"]',
+            ]
+            if clip_index > 1
+            else [
+                '[data-flow-action="generate-video"]',
+                '[data-flow-field="generate-video"]',
+                '[data-flow-action="generate-next-scene-clip"]',
+                '[data-flow-action="generate-next-clip"]',
+                '[data-flow-field="generate-next-clip"]',
+            ]
+        )
+        btn = self.find_button_by_selectors_or_text(
+            frame,
+            selectors=selectors,
+            patterns=[r"generate next", r"next clip", r"generate video", r"tao video", r"\bgenerate\b"],
+        )
+        if btn is None:
+            for scope in self.iter_page_and_frame_scopes():
+                btn = self.find_button_by_selectors_or_text(
+                    scope,
+                    selectors=selectors,
+                    patterns=[r"generate next", r"next clip", r"generate video", r"tao video", r"\bgenerate\b"],
+                )
+                if btn is not None:
+                    break
+        if btn is None:
+            self.capture_debug(f"generate-clip-{clip_index:02d}-not-found")
+            raise RuntimeError(f"Generate button not found for clip {clip_index}.")
+        btn.click()
+        self.emit_log(f"Generating clip {clip_index}...", "INFO")
+
+    def read_clip_plan(self, frame: Frame) -> list[dict]:
+        raw = self.read_flow_output_text_from_scope(frame, "clip-plan-json") or self.read_flow_output_text("clip-plan-json")
+        if not raw:
+            return []
+        candidates = [raw]
+        match = re.search(r"(\{.*\}|\[.*\])", raw, flags=re.DOTALL)
+        if match:
+            candidates.append(match.group(1))
+        for candidate in candidates:
+            with suppress(Exception):
+                parsed = json.loads(candidate)
+                clips = parsed.get("clips") if isinstance(parsed, dict) else parsed
+                if not isinstance(clips, list):
+                    continue
+                normalized = []
+                for item in clips:
+                    if not isinstance(item, dict):
+                        continue
+                    role = str(item.get("clip_role") or item.get("role") or item.get("name") or "").strip()
+                    if not role:
+                        role = f"clip_{len(normalized) + 1}"
+                    duration = item.get("duration") or item.get("duration_seconds") or item.get("seconds") or ""
+                    normalized.append({"clip_role": role, "duration": duration, **item})
+                if normalized:
+                    return normalized
+        return []
+
+    def build_fallback_clip_plan(self, product: ProductRow, selected_model: str, target_final_duration: int) -> list[dict]:
+        count = 3 if self.config.multi_clip_mode == "3" else 2
+        if self.config.multi_clip_mode == "auto":
+            count = 3 if int(target_final_duration or 20) >= 24 else 2
+        roles = ["hook", "product_proof", "offer_cta"] if count == 3 else ["hook_problem", "solution_cta"]
+        duration = max(1, int(target_final_duration or 20) // count)
+        return [
+            {
+                "clip_role": role,
+                "duration": duration,
+                "continuity_prompt": f"{product.product_name} {role} using {selected_model}",
+            }
+            for role in roles
+        ]
+
+    def normalize_clip_plan_for_mode(self, plan: list[dict], product: ProductRow) -> list[dict]:
+        if self.config.multi_clip_mode in {"2", "3"}:
+            target = int(self.config.multi_clip_mode)
+            plan = plan[:target]
+            if len(plan) < target:
+                plan = self.build_fallback_clip_plan(product, self.config.video_model, self.config.target_final_duration)
+        if len(plan) < 2 or len(plan) > 3:
+            plan = plan[:3] if len(plan) > 3 else self.build_fallback_clip_plan(product, self.config.video_model, self.config.target_final_duration)
+        return plan
+
+    def upload_start_frame(self, frame: Frame, frame_path: Path) -> bool:
+        if not frame_path.exists():
+            return False
+        selectors = [
+            'input[data-flow-field="start-frame-upload-input"]',
+            '[data-flow-field="start-frame-upload-input"] input[type="file"]',
+        ]
+        for selector in selectors:
+            locator = self.find_in_all_frames(selector, require_visible=False)
+            if locator is None:
+                continue
+            with suppress(Exception):
+                locator.set_input_files(frame_path.as_posix())
+                self.sleep_ms(800)
+                action = self.find_button_by_selectors_or_text(
+                    frame,
+                    selectors=['[data-flow-action="use-last-frame-as-start-frame"]'],
+                    patterns=[r"use last frame", r"start frame", r"reference"],
+                )
+                if action is not None:
+                    action.click()
+                    self.sleep_ms(800)
+                return True
+        return False
+
+    def capture_last_frame_from_flow(self, frame: Frame, clip_index: int, output_path: Path) -> bool:
+        if self.write_data_url_to_file(self.read_flow_output_text("last-frame-image-data"), output_path):
+            return True
+        button = self.find_button_by_selectors_or_text(
+            frame,
+            selectors=['[data-flow-action="save-last-frame"]'],
+            patterns=[r"save last frame", r"last frame"],
+        )
+        if button is None:
+            return False
+        try:
+            assert self.page is not None
+            with self.page.expect_download(timeout=5_000) as download_info:
+                button.click()
+            download = download_info.value
+            download.save_as(output_path.as_posix())
+            return output_path.exists() and output_path.stat().st_size > 0
+        except Exception:
+            with suppress(Exception):
+                button.click()
+            deadline = time.time() + 8
+            while time.time() < deadline:
+                if self.write_data_url_to_file(self.read_flow_output_text("last-frame-image-data"), output_path):
+                    return True
+                self.sleep_ms(500)
+        return False
+
+    def write_data_url_to_file(self, value: str, output_path: Path) -> bool:
+        value = str(value or "").strip()
+        if not value.startswith("data:"):
+            return False
+        with suppress(Exception):
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(self.decode_data_url(value))
+            return output_path.exists() and output_path.stat().st_size > 0
+        return False
+
+    def extract_last_frame_ffmpeg(self, clip_path: Path, output_path: Path) -> bool:
+        ffmpeg_path = find_ffmpeg_path()
+        if not ffmpeg_path or not clip_path.exists():
+            return False
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        command = [
+            ffmpeg_path,
+            "-y",
+            "-sseof",
+            "-0.1",
+            "-i",
+            str(clip_path),
+            "-frames:v",
+            "1",
+            str(output_path),
+        ]
+        result = subprocess.run(command, capture_output=True, text=True)
+        return result.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0
+
+    def merge_clips_ffmpeg(self, clip_paths: list[Path], output_path: Path) -> bool:
+        ffmpeg_path = find_ffmpeg_path()
+        if not ffmpeg_path or not clip_paths:
+            return False
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        list_path = output_path.with_name("clips.txt")
+        list_path.write_text(
+            "\n".join(f"file '{path.resolve().as_posix().replace(chr(39), chr(39) + chr(92) + chr(39) + chr(39))}'" for path in clip_paths),
+            encoding="utf-8",
+        )
+        copy_command = [ffmpeg_path, "-y", "-f", "concat", "-safe", "0", "-i", str(list_path), "-c", "copy", str(output_path)]
+        result = subprocess.run(copy_command, capture_output=True, text=True)
+        if result.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0:
+            return True
+        with suppress(Exception):
+            output_path.unlink()
+        encode_command = [
+            ffmpeg_path,
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(list_path),
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "20",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            str(output_path),
+        ]
+        result = subprocess.run(encode_command, capture_output=True, text=True)
+        return result.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0
+
+    def try_download_native_scene(self, frame: Frame, output_path: Path) -> bool:
+        button = self.find_button_by_selectors_or_text(
+            frame,
+            selectors=['[data-flow-action="download-scene"]', '[data-flow-field="download-scene"]'],
+            patterns=[r"download scene", r"download final", r"tai"],
+        )
+        if button is None:
+            for scope in self.iter_page_and_frame_scopes():
+                button = self.find_button_by_selectors_or_text(
+                    scope,
+                    selectors=['[data-flow-action="download-scene"]', '[data-flow-field="download-scene"]'],
+                    patterns=[r"download scene", r"download final", r"tai"],
+                )
+                if button is not None:
+                    break
+        if button is None:
+            return False
+        try:
+            assert self.page is not None
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.page.expect_download(timeout=60_000) as download_info:
+                button.click()
+            download_info.value.save_as(output_path.as_posix())
+            return output_path.exists() and output_path.stat().st_size > 0
+        except Exception as exc:
+            self.emit_log(f"Native scene download failed: {exc}", "WARNING")
+            return False
+
+    def wait_for_scene_finished(self, timeout_ms: int) -> bool:
+        deadline = time.time() + timeout_ms / 1000
+        while time.time() < deadline:
+            scene_ready = self.read_flow_output_text("scene-ready").strip().lower()
+            multi_clip_status = self.read_flow_output_text("multi-clip-status").strip().lower()
+            if scene_ready in {"true", "1", "yes", "ready"}:
+                return True
+            if multi_clip_status in {"completed", "done", "success"}:
+                return True
+            if multi_clip_status in {"failed", "error"}:
+                self.emit_log("Native scene builder reported failure.", "WARNING")
+                return False
+            self.sleep_ms(1_000)
+        self.emit_log("Scene-ready output did not complete before timeout; trying fallback download/merge.", "WARNING")
+        return False
+
+    def try_download_video_button(self, frame: Frame, output_path: Path) -> bool:
+        button = self.find_button_by_selectors_or_text(
+            frame,
+            selectors=['[data-flow-action="download-video"]', '[data-flow-field="download-video"]'],
+            patterns=[r"download video", r"download", r"tai video", r"tai"],
+        )
+        if button is None:
+            for scope in self.iter_page_and_frame_scopes():
+                button = self.find_button_by_selectors_or_text(
+                    scope,
+                    selectors=['[data-flow-action="download-video"]', '[data-flow-field="download-video"]'],
+                    patterns=[r"download video", r"download", r"tai video", r"tai"],
+                )
+                if button is not None:
+                    break
+        if button is None:
+            return False
+        try:
+            assert self.page is not None
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.page.expect_download(timeout=60_000) as download_info:
+                button.click()
+            download_info.value.save_as(output_path.as_posix())
+            return output_path.exists() and output_path.stat().st_size > 0
+        except Exception as exc:
+            self.emit_log(f"Video download button fallback failed: {exc}", "WARNING")
+            return False
+
+    def add_clip_to_native_scene(self, frame: Frame) -> bool:
+        button = self.find_button_by_selectors_or_text(
+            frame,
+            selectors=['[data-flow-action="add-clip-to-scene"]'],
+            patterns=[r"add clip", r"add to scene", r"scene"],
+        )
+        if button is None:
+            return False
+        with suppress(Exception):
+            button.click()
+            self.sleep_ms(800)
+            return True
+        return False
+
+    def multi_clip_scene_group_id(self, product: ProductRow, index: int) -> str:
+        product_slug = self.slugify(product.product_name) or "product"
+        return f"{product_slug}-{index + 1:04d}"
+
+    def multi_clip_base_row(
+        self,
+        product: ProductRow,
+        index: int,
+        scene_group_id: str,
+        clip_results: list[dict],
+        raw_final_path: Path,
+        final_path: Path,
+        native_scene_file: str,
+        scene_id: str,
+        merge_method: str,
+    ) -> dict:
+        created_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        voiceover = " ".join(str(item.get("voiceover_text") or "").strip() for item in clip_results).strip()
+        caption = " ".join(str(item.get("caption_text") or "").strip() for item in clip_results).strip()
+        final_prompt = "\n\n".join(str(item.get("final_prompt_text") or "").strip() for item in clip_results if item.get("final_prompt_text"))
+        return {
+            "run_id": self.config.run_id,
+            "batch_id": self.batch_id(),
+            "index": index + 1,
+            "product_name": product.product_name,
+            "product_short_description": product.short_description,
+            "scene_group_id": scene_group_id,
+            "scene_number": 1,
+            "scene_total": len(clip_results),
+            "scene_role": "multi_clip_final",
+            "scene_title": product.product_name,
+            "multi_clip": True,
+            "scene_builder_mode": self.config.scene_builder_mode,
+            "scene_id": scene_id,
+            "native_scene_file": native_scene_file,
+            "merge_method": merge_method,
+            "raw_video_file": raw_final_path.relative_to(raw_final_path.parent.parent).as_posix(),
+            "final_video_file": final_path.relative_to(final_path.parent.parent).as_posix(),
+            "voiceover_text": voiceover,
+            "caption_text": caption,
+            "final_prompt_text": final_prompt,
+            "status": "completed",
+            "created_at": created_at,
+            "error": "",
+        }
+
+    def persist_multi_clip_product_manifest(
+        self,
+        batch_dir: Path,
+        product: ProductRow,
+        index: int,
+        scene_group_id: str,
+        clip_results: list[dict],
+        scene_id: str,
+        scene_clip_list: str,
+        native_scene_file: str,
+        final_video_file: str,
+        merge_method: str,
+        status: str,
+        error: str,
+        postprocess_result: dict,
+    ) -> None:
+        created_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        clips = []
+        for result in clip_results:
+            clips.append(
+                {
+                    "clip_index": self.parse_scene_int(result.get("clip_index"), len(clips) + 1),
+                    "clip_role": result.get("clip_role", ""),
+                    "duration": result.get("clip_duration", ""),
+                    "video_file": result.get("clip_video_file", ""),
+                    "last_frame": result.get("last_frame_file", ""),
+                    "status": result.get("status", ""),
+                }
+            )
+        entry = {
+            "run_id": self.config.run_id,
+            "batch_id": self.batch_id(),
+            "index": index + 1,
+            "scene_group_id": scene_group_id,
+            "product_name": product.product_name,
+            "multi_clip": True,
+            "scene_builder_mode": self.config.scene_builder_mode,
+            "scene_id": scene_id,
+            "scene_clip_list": scene_clip_list,
+            "clip_total": len(clip_results),
+            "clips": clips,
+            "native_scene_file": native_scene_file,
+            "final_video_file": final_video_file,
+            "video_file": final_video_file,
+            "storage_path": f"storage/{self.batch_id()}/{final_video_file}" if final_video_file else "",
+            "merge_method": merge_method,
+            "status": status,
+            "created_at": created_at,
+            "updated_at": created_at,
+            "error": error,
+            **postprocess_result,
+        }
+        if final_video_file:
+            final_path = batch_dir / final_video_file
+            if final_path.exists():
+                entry["file_size"] = final_path.stat().st_size
+
+        manifest_path = batch_dir / "manifest.json"
+        with suppress(Exception):
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+        if "manifest" not in locals():
+            manifest = {}
+        manifest.setdefault("batch_id", self.batch_id())
+        manifest.setdefault("run_id", self.config.run_id or self.batch_id())
+        manifest.setdefault("created_at", created_at)
+        manifest["updated_at"] = created_at
+        items = manifest.setdefault("items", [])
+        identity = (index + 1, scene_group_id, "multi_clip")
+        for item_index, existing in enumerate(items):
+            existing_identity = (
+                self.parse_row_index(existing.get("index")),
+                str(existing.get("scene_group_id") or ""),
+                "multi_clip" if existing.get("multi_clip") else existing.get("scene_number"),
+            )
+            if existing_identity == identity:
+                items[item_index] = entry
+                break
+        else:
+            items.append(entry)
+        manifest["item_count"] = len(items)
+        manifest["completed_count"] = sum(1 for item in items if str(item.get("status") or "").lower() == "completed")
+        manifest["failed_count"] = sum(1 for item in items if str(item.get("status") or "").lower() == "failed")
+        manifest["status"] = "failed" if manifest["failed_count"] else "completed"
+        manifest["products"] = [
+            {
+                "scene_group_id": item.get("scene_group_id", ""),
+                "product_name": item.get("product_name", ""),
+                "multi_clip": bool(item.get("multi_clip")),
+                "scene_builder_mode": item.get("scene_builder_mode", ""),
+                "clip_total": item.get("clip_total", 0),
+                "clips": item.get("clips", []),
+                "final_video_file": item.get("final_video_file", ""),
+                "merge_method": item.get("merge_method", ""),
+                "status": item.get("status", ""),
+            }
+            for item in items
+            if item.get("multi_clip")
+        ]
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        group_manifest_path = batch_dir / "clips" / scene_group_id / "manifest.json"
+        group_manifest_path.write_text(json.dumps(entry, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def fill_scene_metadata_if_available(self, frame: Frame, product: ProductRow) -> None:
         scene = self.scene_metadata_for_product(product)
@@ -1093,7 +1981,12 @@ class FlowBot:
         return self.find_visible_by_selector(frame, selectors)
 
     def wait_for_video_completed_and_capture(
-        self, product: ProductRow, index: int
+        self,
+        product: ProductRow,
+        index: int,
+        clip_metadata: dict | None = None,
+        previous_video_url: str = "",
+        previous_video_download_data: str = "",
     ) -> dict:
         assert self.page is not None
         deadline = time.time() + self.config.wait_timeout_ms / 1000
@@ -1112,6 +2005,9 @@ class FlowBot:
             "video_url": "",
             "video_filename": "",
             "video_download_data": "",
+            "original_image_file": "",
+            "clean_image_file": "",
+            "image_cleanup_status": "",
             "status": "pending",
             "created_at": "",
             "error": "",
@@ -1119,6 +2015,7 @@ class FlowBot:
 
         self.emit_log("Polling video result status...")
         while time.time() < deadline:
+            self.ensure_browser_alive()
             status_text = self.read_flow_output_text("video-status")
             normalized_status = status_text.strip().lower()
             if normalized_status:
@@ -1148,8 +2045,29 @@ class FlowBot:
                 video_url = video_url_from_data or video_url_fallback
                 video_filename = self.read_flow_output_text("video-filename")
                 video_download_data = self.read_flow_output_text("video-download-data")
+                if (
+                    previous_video_url
+                    and video_url
+                    and video_url == previous_video_url
+                    and (not video_download_data or video_download_data == previous_video_download_data)
+                ):
+                    self.emit_log("Video output still matches previous clip; waiting for next clip output...", "INFO")
+                    self.sleep_ms(2_000)
+                    continue
+                if (
+                    previous_video_download_data
+                    and video_download_data
+                    and video_download_data == previous_video_download_data
+                    and (not video_url or video_url == previous_video_url)
+                ):
+                    self.emit_log("Video download data still matches previous clip; waiting for next clip output...", "INFO")
+                    self.sleep_ms(2_000)
+                    continue
                 voiceover_text = self.read_flow_output_text("voiceover")
                 caption_text = self.read_flow_output_text("caption")
+                subtitles_srt = self.read_flow_output_text("subtitles-srt")
+                subtitles_json = self.read_flow_output_text("subtitles-json")
+                video_duration = self.read_flow_output_text("video-duration")
                 final_prompt_text = (
                     self.read_flow_output_text("final-prompt")
                     or self.read_flow_output_text("final_prompt")
@@ -1165,8 +2083,15 @@ class FlowBot:
                         "video_url": video_url,
                         "video_filename": video_filename,
                         "video_download_data": video_download_data,
+                        "original_image_file": self.current_image_cleanup_result.get("original_image_file", ""),
+                        "clean_image_file": self.current_image_cleanup_result.get("clean_image_file", ""),
+                        "image_cleanup_status": self.current_image_cleanup_result.get("image_cleanup_status", ""),
                         "voiceover_text": voiceover_text,
+                        "voiceover": voiceover_text,
                         "caption_text": caption_text,
+                        "subtitles_srt": subtitles_srt,
+                        "subtitles_json": subtitles_json,
+                        "video_duration": video_duration,
                         "final_prompt_text": final_prompt_text,
                         "status": "completed",
                         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -1178,6 +2103,8 @@ class FlowBot:
                     self.emit_log(f"Captured video URL: {video_url}", "SUCCESS")
                 else:
                     self.emit_log("Video completed but URL is empty.", "WARNING")
+                if clip_metadata:
+                    result.update(clip_metadata)
                 return result
 
             is_failed = (
@@ -1194,12 +2121,17 @@ class FlowBot:
                         "scene_total": int(scene["scene_total"]),
                         "scene_role": scene["scene_role"],
                         "scene_title": scene["scene_title"],
+                        "original_image_file": self.current_image_cleanup_result.get("original_image_file", ""),
+                        "clean_image_file": self.current_image_cleanup_result.get("clean_image_file", ""),
+                        "image_cleanup_status": self.current_image_cleanup_result.get("image_cleanup_status", ""),
                         "status": "failed",
                         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
                         "error": f"Video generation failed. Status: {status_text or 'failed'}",
                     }
                 )
                 self.emit_log(result["error"], "ERROR")
+                if clip_metadata:
+                    result.update(clip_metadata)
                 return result
 
             self.sleep_ms(3_000)
@@ -1211,12 +2143,17 @@ class FlowBot:
                 "scene_total": int(scene["scene_total"]),
                 "scene_role": scene["scene_role"],
                 "scene_title": scene["scene_title"],
+                "original_image_file": self.current_image_cleanup_result.get("original_image_file", ""),
+                "clean_image_file": self.current_image_cleanup_result.get("clean_image_file", ""),
+                "image_cleanup_status": self.current_image_cleanup_result.get("image_cleanup_status", ""),
                 "status": "failed",
                 "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
                 "error": "Timed out waiting for video generation to complete.",
             }
         )
         self.emit_log(result["error"], "ERROR")
+        if clip_metadata:
+            result.update(clip_metadata)
         return result
 
     def append_video_result_csv(self, row: dict) -> None:
@@ -1226,6 +2163,14 @@ class FlowBot:
             "batch_id",
             "index",
             "product_name",
+            "multi_clip",
+            "clip_total",
+            "clip_index",
+            "clip_role",
+            "clip_video_file",
+            "last_frame_file",
+            "scene_id",
+            "merge_method",
             "scene_group_id",
             "scene_number",
             "scene_total",
@@ -1236,12 +2181,19 @@ class FlowBot:
             "video_file",
             "storage_path",
             "video_url",
+            "voiceover",
+            "video_duration",
+            "subtitles_srt",
+            "subtitles_json",
             "logo_overlay_status",
             "logo_position",
             "subtitle_enabled",
             "subtitle_file",
             "subtitle_status",
             "subtitle_source",
+            "original_image_file",
+            "clean_image_file",
+            "image_cleanup_status",
             "status",
             "created_at",
             "error",
@@ -1339,8 +2291,16 @@ class FlowBot:
         subtitle_dir = final_video.parent.parent / "subtitles"
         subtitle_path = subtitle_dir / f"{final_video.stem}.srt"
         subtitle_text = self.resolve_subtitle_text(row)
+        provided_srt = str(row.get("subtitles_srt") or "").strip()
+        provided_json = str(row.get("subtitles_json") or "").strip()
 
-        if not subtitle_text.strip():
+        if provided_srt:
+            subtitle_path.parent.mkdir(parents=True, exist_ok=True)
+            subtitle_path.write_text(provided_srt, encoding="utf-8")
+            subtitle_result["subtitle_source"] = "subtitles_srt"
+        elif provided_json and self.write_subtitles_json_as_srt(provided_json, subtitle_path):
+            subtitle_result["subtitle_source"] = "subtitles_json"
+        elif not subtitle_text.strip():
             subtitle_result.update(
                 {
                     "subtitle_status": "skipped",
@@ -1355,9 +2315,10 @@ class FlowBot:
             return result
 
         try:
-            duration = get_video_duration_seconds(current_video)
-            self.emit_log(f"Subtitle generation: video duration {duration:.1f}s", "INFO")
-            generate_srt(subtitle_text, duration, subtitle_path)
+            if not subtitle_path.exists():
+                duration = self.parse_float(row.get("video_duration"), 0.0) or get_video_duration_seconds(current_video)
+                self.emit_log(f"Subtitle generation: video duration {duration:.1f}s", "INFO")
+                generate_srt(subtitle_text, duration, subtitle_path)
             subtitle_result["subtitle_file"] = subtitle_path.relative_to(final_video.parent.parent).as_posix()
             if not subtitle_path.read_text(encoding="utf-8").strip():
                 subtitle_result.update(
@@ -1401,6 +2362,40 @@ class FlowBot:
 
         result.update(subtitle_result)
         return result
+
+    def write_subtitles_json_as_srt(self, value: str, output_srt: Path) -> bool:
+        try:
+            parsed = json.loads(value)
+            items = parsed.get("subtitles") if isinstance(parsed, dict) else parsed
+            if not isinstance(items, list):
+                return False
+            lines: list[str] = []
+            for index, item in enumerate(items, start=1):
+                if not isinstance(item, dict):
+                    continue
+                text = str(item.get("text") or item.get("caption") or item.get("voiceover") or "").strip()
+                if not text:
+                    continue
+                start = self.parse_float(item.get("start") or item.get("start_seconds"), 0.0)
+                end = self.parse_float(item.get("end") or item.get("end_seconds"), start + 2.0)
+                if end <= start:
+                    end = start + 2.0
+                lines.extend(
+                    [
+                        str(len(lines) // 4 + 1),
+                        f"{seconds_to_srt_time(start)} --> {seconds_to_srt_time(end)}",
+                        text,
+                        "",
+                    ]
+                )
+            if not lines:
+                return False
+            output_srt.parent.mkdir(parents=True, exist_ok=True)
+            output_srt.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+            return True
+        except Exception as exc:
+            self.emit_log(f"Could not convert subtitles JSON to SRT: {exc}", "WARNING")
+            return False
 
     def create_final_video_with_logo(self, raw_video: Path, final_video: Path) -> dict:
         result = self.logo_overlay_result("skipped", "")
@@ -1607,6 +2602,9 @@ class FlowBot:
             "subtitle_error": row.get("subtitle_error", ""),
             "subtitle_source": row.get("subtitle_source", ""),
             "subtitle_font_size": row.get("subtitle_font_size", ""),
+            "original_image_file": row.get("original_image_file", ""),
+            "clean_image_file": row.get("clean_image_file", ""),
+            "image_cleanup_status": row.get("image_cleanup_status", ""),
         }
         scenes = manifest.setdefault("scenes", [])
         for index, existing in enumerate(scenes):
@@ -1685,6 +2683,9 @@ class FlowBot:
             "subtitle_position": row.get("subtitle_position", ""),
             "subtitle_font_size": row.get("subtitle_font_size", ""),
             "subtitle_style": row.get("subtitle_style", ""),
+            "original_image_file": row.get("original_image_file", ""),
+            "clean_image_file": row.get("clean_image_file", ""),
+            "image_cleanup_status": row.get("image_cleanup_status", ""),
             "file_size": len(video_bytes) if video_bytes is not None else 0,
         }
         for idx, existing in enumerate(items):
@@ -1803,7 +2804,46 @@ class FlowBot:
         raise RuntimeError(f"Failed to fetch {url} in all frame scopes: {last_error}")
 
     def read_flow_output_text(self, output_name: str) -> str:
-        selectors = [f'[data-flow-output="{output_name}"]']
+        return self.read_output(f'[data-flow-output="{output_name}"]')
+
+    def find_in_all_frames(
+        self,
+        selector: str,
+        require_visible: bool = True,
+        require_enabled: bool = False,
+    ) -> Optional[Locator]:
+        for scope in self.iter_page_and_frame_scopes():
+            with suppress(Exception):
+                locator = scope.locator(selector).first
+                if not locator.count():
+                    continue
+                if require_visible and not locator.is_visible():
+                    continue
+                if require_enabled and locator.is_disabled():
+                    continue
+                return locator
+        return None
+
+    def click_first_available(self, selectors: Iterable[str]) -> bool:
+        for selector in selectors:
+            locator = self.find_in_all_frames(
+                selector,
+                require_visible=True,
+                require_enabled=True,
+            )
+            if locator is None:
+                continue
+            with suppress(Exception):
+                locator.scroll_into_view_if_needed()
+            locator.click()
+            return True
+        return False
+
+    def read_output(self, selector: str) -> str:
+        selector = str(selector or "").strip()
+        if selector and not selector.startswith(("[", ".", "#")):
+            selector = f'[data-flow-output="{selector}"]'
+        selectors = [selector]
         for scope in self.iter_page_and_frame_scopes():
             for selector in selectors:
                 with suppress(Exception):
@@ -1822,6 +2862,22 @@ class FlowBot:
                             value = (reader(locator) or "").strip()
                             if value:
                                 return value
+        return ""
+
+    def wait_output_value(
+        self,
+        selector: str,
+        expected_values: Iterable[str],
+        timeout_ms: int,
+    ) -> str:
+        expected = {str(value).strip().lower() for value in expected_values}
+        deadline = time.time() + timeout_ms / 1000
+        while time.time() < deadline:
+            self.ensure_browser_alive()
+            value = self.read_output(selector).strip()
+            if value.lower() in expected:
+                return value
+            self.sleep_ms(500)
         return ""
 
     def find_video_url_fallback(self) -> str:
@@ -1869,6 +2925,7 @@ class FlowBot:
         self.emit_log("Waiting for create next product button...")
 
         while time.time() < deadline:
+            self.ensure_browser_alive()
             # Search page + all frames
             btn = self._find_create_next_in_all_frames()
             if btn is not None:
@@ -1923,6 +2980,7 @@ class FlowBot:
         deadline = time.time() + timeout_ms / 1000
         self.emit_log("Waiting for Step 1 to reload...")
         while time.time() < deadline:
+            self.ensure_browser_alive()
             frame = self._get_tool_frame_or_none()
             if frame is not None and self.frame_has_product_fields(frame):
                 self.emit_log("Step 1 is ready for next product.", "SUCCESS")
@@ -1984,6 +3042,7 @@ class FlowBot:
         end_time = time.time() + timeout_ms / 1000
         self.sleep_ms(1_500)
         while time.time() < end_time:
+            self.ensure_browser_alive()
             if self.frame_has_product_fields(self.page.main_frame):
                 self.emit_log(f"Tool fields found in main frame: {self.page.url}")
                 return self.page.main_frame
@@ -2019,6 +3078,8 @@ class FlowBot:
         end_time = time.time() + timeout_ms / 1000
         self.emit_log("Waiting for Step 1 product inputs...")
         while time.time() < end_time:
+            self.ensure_browser_alive()
+            frame = self.refresh_frame_reference(frame)
             name_input  = self.find_text_field(frame, "product_name")
             short_input = self.find_text_field(frame, "short_description")
             long_input  = self.find_text_field(frame, "long_description")
@@ -2212,6 +3273,13 @@ class FlowBot:
             return fallback
 
     @staticmethod
+    def parse_float(value: object, fallback: float = 0.0) -> float:
+        try:
+            return max(0.0, float(str(value)))
+        except (TypeError, ValueError):
+            return fallback
+
+    @staticmethod
     def parse_row_index(value: object) -> int:
         try:
             return max(0, int(float(str(value))))
@@ -2223,6 +3291,11 @@ class FlowBot:
         normalized = unicodedata.normalize("NFKD", value or "").encode("ascii", "ignore").decode("ascii")
         slug = re.sub(r"[^a-zA-Z0-9]+", "-", normalized).strip("-").lower()
         return slug or "single"
+
+    @staticmethod
+    def ascii_fold(value: str) -> str:
+        normalized = unicodedata.normalize("NFKD", value or "").encode("ascii", "ignore").decode("ascii")
+        return re.sub(r"\s+", " ", normalized).strip()
 
     def iter_candidate_inputs(self, frame: Frame) -> Iterable[Locator]:
         for selector in ("input", "textarea", '[contenteditable="true"]'):
@@ -2404,11 +3477,195 @@ class FlowBot:
             ext = ".webp"
         target = self.config.temp_dir / f"product_{index + 1}{ext}"
         target.write_bytes(response.content)
-        self.emit_log(f"Downloaded image to {target}")
+        self.emit_log(f"Downloaded original image to {target}")
         return target
 
-    def upload_image(self, frame: Frame, image_path: Path) -> None:
+    def clean_product_image(self, original_path: Path, product: ProductRow, index: int) -> Path:
+        slug = self.slugify(product.product_name)
+        filename_base = f"{index + 1:04d}_{slug}"
+        original_png = self.config.output_dir / "original-images" / f"{filename_base}.png"
+        clean_png = self.config.output_dir / "clean-images" / f"{filename_base}_clean.png"
+        failed_png = self.config.output_dir / "failed-cleanup-images" / f"{filename_base}.png"
+        original_png.parent.mkdir(parents=True, exist_ok=True)
+        clean_png.parent.mkdir(parents=True, exist_ok=True)
+        failed_png.parent.mkdir(parents=True, exist_ok=True)
+
+        stored_original = original_png
+        self.current_image_cleanup_result = {
+            "original_image_file": stored_original.relative_to(self.config.output_dir).as_posix(),
+            "clean_image_file": "",
+            "image_cleanup_status": "pending",
+        }
+
+        try:
+            self.save_image_as_png(original_path, original_png)
+            cleanup_input = original_png
+        except Exception as exc:
+            self.emit_log(f"Could not normalize original image to PNG: {exc}", "WARNING")
+            suffix = original_path.suffix if original_path.suffix else ".img"
+            stored_original = original_png.with_suffix(suffix)
+            shutil.copyfile(original_path, stored_original)
+            cleanup_input = stored_original
+            self.current_image_cleanup_result["original_image_file"] = stored_original.relative_to(
+                self.config.output_dir
+            ).as_posix()
+        self.emit_log(f"Downloaded original image saved: {stored_original}", "SUCCESS")
+
+        mode = str(self.config.cleanup_mode or "auto").strip().lower()
+        if not self.config.enable_product_image_cleanup or mode == "none":
+            self.current_image_cleanup_result["image_cleanup_status"] = "disabled"
+            self.emit_log("Product image cleanup disabled. Using original image.", "INFO")
+            return stored_original
+
+        if self.config.cleanup_cache_enabled and clean_png.exists() and clean_png.stat().st_size > 0:
+            self.current_image_cleanup_result.update(
+                {
+                    "clean_image_file": clean_png.relative_to(self.config.output_dir).as_posix(),
+                    "image_cleanup_status": "cached",
+                }
+            )
+            self.emit_log(f"Using cached cleaned product image: {clean_png}", "SUCCESS")
+            return clean_png
+
+        self.emit_log("Cleaning product image...", "INFO")
+        cleaned = False
+        cleanup_status = ""
+        try:
+            if mode in {"auto", "remove_background"}:
+                cleaned = self.remove_background_with_rembg(cleanup_input, clean_png)
+                if cleaned:
+                    cleanup_status = "rembg"
+                    self.emit_log("Background removed successfully.", "SUCCESS")
+                elif mode == "remove_background" and not self.config.cleanup_white_background_fallback:
+                    raise RuntimeError("rembg is not installed or background removal failed.")
+            if not cleaned and mode in {"auto", "remove_background", "sharpen_only"}:
+                cleaned = self.fallback_pillow_cleanup(cleanup_input, clean_png)
+                cleanup_status = "pillow"
+        except Exception as exc:
+            self.emit_log(f"Cleanup failed, using original image. {exc}", "WARNING")
+            with suppress(Exception):
+                shutil.copyfile(stored_original, failed_png.with_suffix(stored_original.suffix))
+            self.current_image_cleanup_result["image_cleanup_status"] = "failed"
+            return stored_original
+
+        if cleaned and clean_png.exists() and clean_png.stat().st_size > 0:
+            self.current_image_cleanup_result.update(
+                {
+                    "clean_image_file": clean_png.relative_to(self.config.output_dir).as_posix(),
+                    "image_cleanup_status": cleanup_status or "success",
+                }
+            )
+            self.emit_log(f"Using cleaned product image: {clean_png}", "SUCCESS")
+            return clean_png
+
+        self.emit_log("Cleanup failed, using original image.", "WARNING")
+        with suppress(Exception):
+            shutil.copyfile(stored_original, failed_png.with_suffix(stored_original.suffix))
+        self.current_image_cleanup_result["image_cleanup_status"] = "failed"
+        return stored_original
+
+    def save_image_as_png(self, input_path: Path, output_path: Path) -> None:
+        from PIL import Image, ImageOps
+
+        with Image.open(input_path) as image:
+            image = ImageOps.exif_transpose(image)
+            if image.mode not in {"RGB", "RGBA"}:
+                image = image.convert("RGBA")
+            image.save(output_path, "PNG")
+
+    def remove_background_with_rembg(self, input_path: Path, output_path: Path) -> bool:
+        try:
+            from rembg import remove
+            from PIL import Image, ImageOps
+        except Exception as exc:
+            self.emit_log(f"rembg unavailable, using Pillow fallback. {exc}", "INFO")
+            return False
+
+        try:
+            with Image.open(input_path) as image:
+                image = ImageOps.exif_transpose(image).convert("RGBA")
+                cleaned = remove(image)
+                if cleaned.mode != "RGBA":
+                    cleaned = cleaned.convert("RGBA")
+                cleaned.save(output_path, "PNG")
+            return output_path.exists() and output_path.stat().st_size > 0
+        except Exception as exc:
+            self.emit_log(f"rembg background removal failed: {exc}", "WARNING")
+            return False
+
+    def fallback_pillow_cleanup(self, input_path: Path, output_path: Path) -> bool:
+        try:
+            from PIL import Image, ImageChops, ImageEnhance, ImageOps
+        except Exception as exc:
+            self.emit_log(f"Pillow cleanup unavailable: {exc}", "WARNING")
+            return False
+
+        try:
+            with Image.open(input_path) as image:
+                image = ImageOps.exif_transpose(image).convert("RGBA")
+                image = self.crop_image_border(image, ImageChops)
+                if self.config.cleanup_sharpen:
+                    image = ImageEnhance.Sharpness(image).enhance(1.2)
+                image = ImageEnhance.Contrast(image).enhance(1.05)
+                if self.config.cleanup_background == "white":
+                    background = Image.new("RGBA", image.size, (255, 255, 255, 255))
+                    background.alpha_composite(image)
+                    image = background
+                image.save(output_path, "PNG")
+            self.emit_log("Pillow cleanup completed.", "SUCCESS")
+            return output_path.exists() and output_path.stat().st_size > 0
+        except Exception as exc:
+            self.emit_log(f"Pillow cleanup failed: {exc}", "WARNING")
+            return False
+
+    def crop_image_border(self, image, image_chops):
+        from PIL import Image
+
+        alpha = image.getchannel("A")
+        bbox = alpha.getbbox()
+        if bbox and bbox != (0, 0, image.width, image.height):
+            return image.crop(bbox)
+
+        background = image.getpixel((0, 0))
+        bg = Image.new(image.mode, image.size, background)
+        diff = image_chops.difference(image, bg)
+        diff = image_chops.add(diff, diff, 2.0, -24)
+        bbox = diff.getbbox()
+        if bbox:
+            return image.crop(bbox)
+        return image
+
+    def upload_image(self, frame: Frame, image_path: Path, product: ProductRow | None = None) -> Frame:
         assert self.page is not None
+        product_label = self.slugify(product.product_name) if product else image_path.stem
+        product_label = product_label or "product"
+        last_error = ""
+
+        for refresh_attempt in range(max(0, self.config.max_page_refresh_retries) + 1):
+            self.ensure_browser_alive(force=True)
+            frame = self.refresh_frame_reference(frame)
+            self.wait_for_flow_render_idle(frame)
+            diagnostics = self.capture_media_upload_diagnostics(frame)
+            self.log_media_upload_diagnostics(diagnostics)
+            self.emit_log("Attempting media upload.", "INFO")
+
+            success, last_error = self.try_upload_image_with_dialog_candidates(frame, image_path)
+            if success:
+                return frame
+
+            self.write_media_failure_artifacts(product_label, diagnostics, suffix="failed")
+            if refresh_attempt >= max(0, self.config.max_page_refresh_retries):
+                break
+
+            self.emit_log(
+                f"Media dialog failed after selector retries ({last_error}). Refreshing page for recovery...",
+                "WARNING",
+            )
+            self.recover_page_after_media_dialog_failure(product_label, product)
+            frame = self.wait_for_tool_frame()
+
+        raise RuntimeError(f"Media dialog did not appear after recovery. Last error: {last_error}")
+
         self.emit_log("Looking for image upload trigger...")
         trigger = self.find_upload_trigger(frame)
         if trigger is None:
@@ -2440,6 +3697,421 @@ class FlowBot:
                 self.sleep_ms(1_500)
                 self.emit_log("Confirmed selected image.")
 
+    def try_upload_image_with_dialog_candidates(self, frame: Frame, image_path: Path) -> tuple[bool, str]:
+        selectors_tried: list[str] = []
+        last_error = ""
+        for attempt in range(1, max(1, self.config.max_upload_dialog_retries) + 1):
+            candidates = self.find_upload_candidates(frame)
+            if not candidates:
+                last_error = "No upload candidates found."
+                self.emit_log(last_error, "WARNING")
+                continue
+
+            for selector, locator in candidates:
+                selectors_tried.append(selector)
+                try:
+                    self.emit_log(
+                        f"Upload dialog attempt {attempt}/{self.config.max_upload_dialog_retries}: {selector}",
+                        "INFO",
+                    )
+                    if selector == 'input[type="file"]':
+                        locator.set_input_files(image_path.as_posix())
+                        self.emit_log("Attached image via visible file input.", "SUCCESS")
+                        self.finish_media_dialog_upload(frame, image_path)
+                        return True, ""
+
+                    opened = self.click_upload_candidate_and_wait(frame, locator, attempt)
+                    if not opened:
+                        last_error = f"No dialog or file input appeared after clicking {selector}."
+                        continue
+                    self.attach_image_to_open_media_dialog(frame, image_path)
+                    self.finish_media_dialog_upload(frame, image_path)
+                    return True, ""
+                except Exception as exc:
+                    last_error = f"{selector}: {exc}"
+                    self.emit_log(f"Upload candidate failed: {last_error}", "WARNING")
+                    self.ensure_browser_alive(force=True)
+
+        self.emit_log(
+            f"Media dialog failed. Selectors tried: {', '.join(dict.fromkeys(selectors_tried)) or 'none'}",
+            "WARNING",
+        )
+        return False, last_error or "All upload candidates exhausted."
+
+    def find_upload_candidates(self, frame: Frame) -> list[tuple[str, Locator]]:
+        candidate_specs = [
+            ('[data-flow-action="upload-image"]', '[data-flow-action="upload-image"]'),
+            ('button:has-text("Upload")', 'button:has-text("Upload")'),
+            ('button:has-text("Add Media")', 'button:has-text("Add Media")'),
+            ('button:has-text("Image")', 'button:has-text("Image")'),
+            ('input[type="file"]', 'input[type="file"]'),
+        ]
+        candidates: list[tuple[str, Locator]] = []
+        for label, selector in candidate_specs:
+            scopes: list[Page | Frame] = [frame]
+            if self.page is not None and self.page != frame:
+                scopes.append(self.page)
+            for scope in scopes:
+                with suppress(Exception):
+                    locators = scope.locator(selector)
+                    count = min(locators.count(), 8)
+                    for index in range(count):
+                        locator = locators.nth(index)
+                        if label != 'input[type="file"]' and (not locator.is_visible() or locator.is_disabled()):
+                            continue
+                        candidates.append((label, locator))
+        return candidates
+
+    def click_upload_candidate_and_wait(self, frame: Frame, locator: Locator, attempt: int) -> bool:
+        assert self.page is not None
+        self._pending_file_chooser = None
+        try:
+            with self.page.expect_file_chooser(timeout=10_000) as chooser_info:
+                if attempt == 1:
+                    locator.click(timeout=5_000)
+                elif attempt == 2:
+                    locator.scroll_into_view_if_needed(timeout=5_000)
+                    locator.click(timeout=5_000)
+                else:
+                    locator.evaluate("(el) => el.click()")
+            self._pending_file_chooser = chooser_info.value
+            return True
+        except PlaywrightTimeoutError:
+            self._pending_file_chooser = None
+        except Exception:
+            self._pending_file_chooser = None
+            if attempt == 3:
+                with suppress(Exception):
+                    locator.evaluate("(el) => el.click()")
+            else:
+                raise
+        return self.wait_for_media_dialog_or_input(frame, timeout_ms=10_000)
+
+    def wait_for_media_dialog_or_input(self, frame: Frame, timeout_ms: int = 10_000) -> bool:
+        deadline = time.time() + timeout_ms / 1000
+        while time.time() < deadline:
+            self.ensure_browser_alive()
+            for scope in self.iter_page_and_frame_scopes():
+                for selector in ('input[type="file"]', '[role="dialog"]', '[data-flow-dialog="media"]'):
+                    with suppress(Exception):
+                        locator = scope.locator(selector).first
+                        if locator.count() and (selector == 'input[type="file"]' or locator.is_visible()):
+                            return True
+            self.sleep_ms(300)
+        return False
+
+    def attach_image_to_open_media_dialog(self, frame: Frame, image_path: Path) -> None:
+        chooser = getattr(self, "_pending_file_chooser", None)
+        if chooser is not None:
+            chooser.set_files(image_path.as_posix())
+            self._pending_file_chooser = None
+            self.emit_log("Attached image via file chooser.", "SUCCESS")
+            return
+
+        for scope in self.iter_page_and_frame_scopes():
+            with suppress(Exception):
+                input_locator = scope.locator('input[type="file"]').first
+                if input_locator.count():
+                    input_locator.set_input_files(image_path.as_posix())
+                    self.emit_log("Attached image inside media dialog.", "SUCCESS")
+                    return
+        raise RuntimeError("Media dialog opened but file input was not found.")
+
+    def finish_media_dialog_upload(self, frame: Frame, image_path: Path) -> None:
+        self.sleep_ms(self.config.extra_wait_after_upload_ms)
+        dialog = self.wait_for_dialog(optional=True, timeout_ms=10_000)
+        if dialog is not None:
+            self.select_dialog_image(dialog, image_path.name)
+            self.sleep_ms(self.config.extra_wait_before_confirm_ms)
+            confirm = self.find_button(dialog, [r"xác nhận", r"xac nhan", r"confirm", r"done", r"chọn", r"chon"])
+            if confirm is not None:
+                confirm.click()
+                self.sleep_ms(1_500)
+                self.emit_log("Confirmed selected image.")
+
+    def recover_page_after_media_dialog_failure(self, product_label: str, product: ProductRow | None) -> None:
+        assert self.page is not None
+        self.ensure_browser_alive(force=True)
+        self.page.reload(wait_until="load", timeout=60_000)
+        self.sleep_ms(15_000)
+        self.capture_debug(f"page-refresh-recovery-{product_label}")
+        self.ensure_browser_alive(force=True)
+        frame = self.wait_for_tool_frame()
+        self.wait_for_product_step_ready(frame)
+        if product is not None:
+            self.import_preset_if_needed(frame)
+            self.upload_website_logo_if_needed(frame)
+            self.fill_text_fields(frame, product)
+            self.sleep_ms(self.config.extra_wait_after_fill_ms)
+
+    def wait_for_flow_render_idle(self, frame: Frame, timeout_ms: int = 20_000) -> None:
+        deadline = time.time() + timeout_ms / 1000
+        while time.time() < deadline:
+            self.ensure_browser_alive()
+            ready = False
+            with suppress(Exception):
+                ready = bool(frame.evaluate("() => document.readyState === 'complete'"))
+            spinner = self.detect_spinner_state(frame)
+            if ready and not spinner.get("visible"):
+                return
+            self.sleep_ms(500)
+        self.emit_log("Flow render did not become fully idle before upload; continuing with retries.", "WARNING")
+
+    def detect_spinner_state(self, frame: Frame | None = None) -> dict:
+        script = """
+            () => {
+              const selectors = [
+                '[role="progressbar"]',
+                '[aria-busy="true"]',
+                '[data-loading="true"]',
+                '.loading',
+                '.spinner',
+                '[class*="spinner"]',
+                '[class*="loading"]'
+              ];
+              const found = [];
+              for (const selector of selectors) {
+                for (const el of Array.from(document.querySelectorAll(selector)).slice(0, 10)) {
+                  const style = window.getComputedStyle(el);
+                  const rect = el.getBoundingClientRect();
+                  if (style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0) {
+                    found.push(selector);
+                    break;
+                  }
+                }
+              }
+              return { visible: found.length > 0, selectors: found };
+            }
+        """
+        for scope in ([frame] if frame is not None else []) + self.iter_page_and_frame_scopes():
+            if scope is None:
+                continue
+            with suppress(Exception):
+                state = scope.evaluate(script)
+                if state and state.get("visible"):
+                    return state
+        return {"visible": False, "selectors": []}
+
+    def capture_media_upload_diagnostics(self, frame: Frame) -> dict:
+        current_url = ""
+        with suppress(Exception):
+            current_url = self.page.url if self.page else ""
+        return {
+            "url": current_url,
+            "flow_step": self.detect_current_flow_step(frame),
+            "visible_buttons": self.visible_button_texts(frame),
+            "visible_dialogs": self.visible_dialog_texts(frame),
+            "spinner_state": self.detect_spinner_state(frame),
+        }
+
+    def log_media_upload_diagnostics(self, diagnostics: dict) -> None:
+        self.emit_log(f"Media upload URL: {diagnostics.get('url') or '-'}", "INFO")
+        self.emit_log(f"Media upload active step: {diagnostics.get('flow_step') or 'unknown'}", "INFO")
+        self.emit_log(f"Media upload spinner state: {diagnostics.get('spinner_state')}", "INFO")
+        buttons = diagnostics.get("visible_buttons") or []
+        dialogs = diagnostics.get("visible_dialogs") or []
+        self.emit_log(f"Visible buttons before upload: {' | '.join(buttons[:25]) or 'none'}", "INFO")
+        self.emit_log(f"Visible dialogs before upload: {' | '.join(dialogs[:8]) or 'none'}", "INFO")
+
+    def write_media_failure_artifacts(self, product_label: str, diagnostics: dict, suffix: str) -> None:
+        label = f"media-dialog-{suffix}-{product_label}"
+        self.emit_log(
+            "Media dialog failure diagnostics: "
+            f"url={diagnostics.get('url') or '-'}; "
+            f"step={diagnostics.get('flow_step') or 'unknown'}; "
+            f"spinner={diagnostics.get('spinner_state')}; "
+            f"buttons={' | '.join((diagnostics.get('visible_buttons') or [])[:25]) or 'none'}",
+            "WARNING",
+        )
+        self.capture_debug(label)
+        dom_path = self.config.output_dir / f"{label}.html"
+        buttons_path = self.config.output_dir / f"{label}-buttons.json"
+        with suppress(Exception):
+            assert self.page is not None
+            dom_path.write_text(self.page.content(), encoding="utf-8")
+        with suppress(Exception):
+            buttons_path.write_text(json.dumps(diagnostics, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def detect_current_flow_step(self, frame: Frame) -> str:
+        outputs = ("current-step", "step", "flow-step", "multi-clip-status", "video-status")
+        for output in outputs:
+            value = self.read_flow_output_text_from_scope(frame, output) or self.read_flow_output_text(output)
+            if value:
+                return value
+        if self.frame_has_product_fields(frame):
+            return "step-1-product"
+        with suppress(Exception):
+            if self.find_generate_button(frame) is not None:
+                return "generate-video"
+        with suppress(Exception):
+            if self.find_button_by_selectors_or_text(
+                frame,
+                selectors=['[data-flow-action="brainstorm-idea"]', '[data-flow-field="brainstorm-idea"]'],
+                patterns=[r"brainstorm", r"y tuong"],
+            ) is not None:
+                return "brainstorm"
+        return "unknown"
+
+    def visible_button_texts(self, frame: Frame) -> list[str]:
+        script = """
+            () => Array.from(document.querySelectorAll('button, [role="button"], a'))
+              .filter(el => {
+                const style = window.getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+              })
+              .slice(0, 80)
+              .map(el => (el.getAttribute("data-flow-action") || el.getAttribute("data-flow-field") || el.textContent || "").trim())
+              .filter(Boolean)
+        """
+        values: list[str] = []
+        for scope in [frame, self.page] if self.page is not None else [frame]:
+            with suppress(Exception):
+                values.extend(str(item)[:120] for item in scope.evaluate(script))
+        return list(dict.fromkeys(values))
+
+    def visible_dialog_texts(self, frame: Frame) -> list[str]:
+        script = """
+            () => Array.from(document.querySelectorAll('[role="dialog"], [data-flow-dialog]'))
+              .filter(el => {
+                const style = window.getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+              })
+              .slice(0, 20)
+              .map(el => (el.getAttribute("data-flow-dialog") || el.textContent || "").trim().replace(/\\s+/g, " ").slice(0, 180))
+              .filter(Boolean)
+        """
+        values: list[str] = []
+        for scope in [frame, self.page] if self.page is not None else [frame]:
+            with suppress(Exception):
+                values.extend(str(item) for item in scope.evaluate(script))
+        return list(dict.fromkeys(values))
+
+    def refresh_frame_reference(self, frame: Frame) -> Frame:
+        with suppress(Exception):
+            if frame.is_detached():
+                fresh = self._get_tool_frame_or_none()
+                if fresh is not None:
+                    return fresh
+        return frame
+
+    def clean_uploaded_product_image_in_flow(self, frame: Frame, product: ProductRow | None = None) -> None:
+        if not self.config.enable_flow_product_cleanup:
+            return
+
+        self.emit_log("Waiting for uploaded product image before Flow cleanup...", "INFO")
+        product_label = self.slugify(product.product_name) if product else "product"
+        product_label = product_label or "product"
+        if not self.wait_for_flow_product_cleanup_ready(frame):
+            self.capture_debug(f"flow-product-cleanup-not-ready-{product_label}")
+            self.emit_log(
+                "Flow product cleanup controls did not become ready; skipping Flow cleanup and continuing.",
+                "WARNING",
+            )
+            return
+        self.ensure_flow_product_cleanup_enabled(frame)
+
+        button = self.find_visible_by_selector(
+            frame,
+            [
+                '[data-flow-action="clean-product-image"]',
+                '[data-flow-field="clean-product-image"]',
+            ],
+            require_enabled=True,
+        )
+        if button is None:
+            self.emit_log("Flow product cleanup button not found; skipping Flow cleanup.", "WARNING")
+            return
+
+        self.emit_log("Clicking Flow product cleanup button...", "INFO")
+        try:
+            button.scroll_into_view_if_needed()
+            button.click()
+            if self.wait_for_flow_product_cleanup_success(frame):
+                self.emit_log("Flow product cleanup status: success.", "SUCCESS")
+            else:
+                self.emit_log("Flow product cleanup did not finish; continuing with uploaded cleaned image.", "WARNING")
+        except Exception as exc:
+            self.emit_log(f"Flow product cleanup skipped after error: {exc}", "WARNING")
+
+    def wait_for_flow_product_cleanup_ready(self, frame: Frame) -> bool:
+        timeout_ms = min(max(1, self.config.flow_product_cleanup_timeout_ms), 30_000)
+        deadline = time.time() + timeout_ms / 1000
+        while time.time() < deadline:
+            self.ensure_browser_alive()
+            frame = self.refresh_frame_reference(frame)
+            button = self.find_visible_by_selector(
+                frame,
+                [
+                    '[data-flow-action="clean-product-image"]',
+                    '[data-flow-field="clean-product-image"]',
+                ],
+                require_enabled=True,
+            )
+            if button is not None:
+                self.emit_log("Uploaded product image is ready for Flow cleanup.", "SUCCESS")
+                return True
+            self.sleep_ms(500)
+        return False
+
+    def ensure_flow_product_cleanup_enabled(self, frame: Frame) -> None:
+        toggle = self.find_visible_by_selector(frame, ['[data-flow-field="enable-product-cleanup"]'])
+        if toggle is None:
+            return
+        with suppress(Exception):
+            class_name = toggle.get_attribute("class") or ""
+            aria_checked = (toggle.get_attribute("aria-checked") or "").lower()
+            is_enabled = aria_checked == "true" or "bg-blue" in class_name or "bg-blue-500" in class_name
+            if not is_enabled:
+                toggle.click()
+                self.sleep_ms(400)
+                self.emit_log("Enabled Flow product cleanup toggle.", "INFO")
+
+    def wait_for_flow_product_cleanup_success(self, frame: Frame) -> bool:
+        timeout_ms = min(max(1, self.config.flow_product_cleanup_timeout_ms), 30_000)
+        deadline = time.time() + timeout_ms / 1000
+        last_status = ""
+        success_states = {"success", "succeeded", "done", "completed", "complete", "thanh cong"}
+        failure_states = {"failed", "fail", "error", "loi", "that bai"}
+        while time.time() < deadline:
+            self.ensure_browser_alive()
+            frame = self.refresh_frame_reference(frame)
+            status = self.read_flow_output_text_from_scope(frame, "product-cleanup-status")
+            normalized = self.ascii_fold(status.strip().lower())
+            if normalized and normalized != last_status:
+                self.emit_log(f"Flow product cleanup status: {status}", "INFO")
+                last_status = normalized
+            if normalized in success_states:
+                return True
+            if normalized in failure_states:
+                self.emit_log(f"Flow product cleanup failed: {status}", "WARNING")
+                return False
+            self.sleep_ms(800)
+        self.emit_log(
+            f"Flow product cleanup did not finish successfully. Last status: {last_status or 'unknown'}",
+            "WARNING",
+        )
+        return False
+
+    def read_flow_output_text_from_scope(self, scope: Page | Frame | Locator, output_name: str) -> str:
+        selector = f'[data-flow-output="{output_name}"]'
+        with suppress(Exception):
+            locator = scope.locator(selector).first
+            if not locator.count():
+                return ""
+            for reader in (
+                lambda item: item.input_value(),
+                lambda item: item.get_attribute("value") or "",
+                lambda item: item.inner_text(),
+                lambda item: item.text_content() or "",
+            ):
+                with suppress(Exception):
+                    value = (reader(locator) or "").strip()
+                    if value:
+                        return value
+        return ""
+
     def find_upload_trigger(self, frame: Frame) -> Optional[Locator]:
         for selector in [
             '[data-flow-field="product-upload"]',
@@ -2462,16 +4134,21 @@ class FlowBot:
                     return locator
         return None
 
-    def wait_for_dialog(self, optional: bool = False, timeout_ms: int = 15_000):
-        assert self.page is not None
-        dialog = self.page.locator('[role="dialog"]').last
-        try:
-            dialog.wait_for(state="visible", timeout=timeout_ms)
-            return dialog
-        except PlaywrightTimeoutError:
-            if optional:
-                return None
-            raise RuntimeError("Media dialog did not appear.")
+    def wait_for_dialog(self, optional: bool = False, timeout_ms: int = 10_000):
+        deadline = time.time() + timeout_ms / 1000
+        selectors = ('[data-flow-dialog="media"]', '[role="dialog"]')
+        while time.time() < deadline:
+            self.ensure_browser_alive()
+            for scope in self.iter_page_and_frame_scopes():
+                for selector in selectors:
+                    with suppress(Exception):
+                        dialog = scope.locator(selector).last
+                        if dialog.count() and dialog.is_visible():
+                            return dialog
+            self.sleep_ms(300)
+        if optional:
+            return None
+        raise RuntimeError("Media dialog did not appear.")
 
     def select_dialog_image(self, dialog: Locator, filename: str) -> None:
         self.sleep_ms(1_200)
@@ -2552,6 +4229,16 @@ class FlowBot:
         with suppress(Exception):
             self.page.screenshot(path=target.as_posix(), full_page=True)
             self.emit_log(f"Saved debug screenshot: {target}", "WARNING")
+        snapshot = self.config.output_dir / f"{label}.dom.html"
+        with suppress(Exception):
+            frames_html = []
+            for idx, frame in enumerate(self.page.frames):
+                with suppress(Exception):
+                    frames_html.append(
+                        f"\n<!-- frame {idx}: {frame.url or '<srcdoc>'} -->\n{frame.content()}"
+                    )
+            snapshot.write_text("\n".join(frames_html), encoding="utf-8")
+            self.emit_log(f"Saved DOM snapshot: {snapshot}", "WARNING")
 
     @staticmethod
     def sleep_ms(milliseconds: int) -> None:

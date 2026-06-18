@@ -905,6 +905,56 @@ def render_home(flow_url: str) -> str:
                 <option value="Veo 3.1 - Quality">Veo 3.1 - Quality</option>
               </select>
             </div>
+            <div>
+              <label class="form-label" for="aspect-ratio">Aspect Ratio</label>
+              <select class="form-input" id="aspect-ratio" data-ui-field="aspect-ratio">
+                <option value="9:16" selected>9:16</option>
+                <option value="16:9">16:9</option>
+                <option value="1:1">1:1</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label" for="multi-clip-mode">Multi-Clip Mode</label>
+              <select class="form-input" id="multi-clip-mode" data-ui-field="multi-clip-mode">
+                <option value="auto" selected>auto</option>
+                <option value="off">off</option>
+                <option value="2">2 clips</option>
+                <option value="3">3 clips</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label" for="scene-builder-mode">Scene Builder Mode</label>
+              <select class="form-input" id="scene-builder-mode" data-ui-field="scene-builder-mode">
+                <option value="native_flow" selected>native_flow</option>
+                <option value="bot_merge">bot_merge</option>
+                <option value="off">off</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label" for="target-final-duration">Target Final Duration</label>
+              <select class="form-input" id="target-final-duration" data-ui-field="target-final-duration">
+                <option value="15">15s</option>
+                <option value="20" selected>20s</option>
+                <option value="24">24s</option>
+                <option value="30">30s</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label" for="download-mode">Download Mode</label>
+              <select class="form-input" id="download-mode" data-ui-field="download-mode">
+                <option value="capture_only">capture_only</option>
+                <option value="save_local" selected>save_local</option>
+                <option value="save_local_and_zip">save_local_and_zip</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label" for="max-generate-retries">Max Generate Retries</label>
+              <input class="form-input" id="max-generate-retries" data-ui-field="max-generate-retries" type="number" value="1" min="0" max="5"/>
+            </div>
+            <div class="span-all" style="display:flex;align-items:center;gap:.5rem;margin-top:.25rem">
+              <input type="checkbox" id="continue-on-error" data-ui-field="continue-on-error"/>
+              <label for="continue-on-error" style="color: var(--text); font-size: 0.875rem; cursor: pointer; user-select: none;">Continue on error</label>
+            </div>
             <div class="span-all" style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.25rem;">
               <input type="checkbox" id="auto-download-zip" checked/>
               <label for="auto-download-zip" style="color: var(--text); font-size: 0.875rem; cursor: pointer; user-select: none;">Tự động tải file ZIP chứa tất cả video (đã sắp xếp theo folder) khi batch hoàn thành</label>
@@ -936,6 +986,19 @@ def render_home(flow_url: str) -> str:
             <div>
               <label class="form-label" for="subtitle-font-size">Subtitle Font Size</label>
               <input class="form-input" id="subtitle-font-size" type="number" value="18" min="10" max="48"/>
+            </div>
+            <div class="span-all" style="display:flex;align-items:center;gap:.5rem;margin-top:.25rem">
+              <input type="checkbox" id="enable-product-image-cleanup" data-ui-field="enable-product-image-cleanup" checked/>
+              <label for="enable-product-image-cleanup" style="color: var(--text); font-size: 0.875rem; cursor: pointer; user-select: none;">Product Image Cleanup</label>
+            </div>
+            <div>
+              <label class="form-label" for="cleanup-mode">Cleanup Mode</label>
+              <select class="form-input" id="cleanup-mode" data-ui-field="cleanup-mode">
+                <option value="auto" selected>auto</option>
+                <option value="remove_background">remove_background</option>
+                <option value="sharpen_only">sharpen_only</option>
+                <option value="none">none</option>
+              </select>
             </div>
             <div class="span-all" style="display:flex;align-items:center;gap:.5rem;margin-top:.25rem">
               <input type="checkbox" id="enable-logo-overlay" data-ui-field="enable-logo-overlay" checked/>
@@ -1226,6 +1289,13 @@ def render_home(flow_url: str) -> str:
     autoDownloadZip: 'flowBot.autoDownloadZip',
     downloadResolution: 'flowBot.downloadResolution',
     videoModel: 'flowBot.videoModel',
+    aspectRatio: 'flowBot.aspectRatio',
+    multiClipMode: 'flowBot.multiClipMode',
+    sceneBuilderMode: 'flowBot.sceneBuilderMode',
+    targetFinalDuration: 'flowBot.targetFinalDuration',
+    downloadMode: 'flowBot.downloadMode',
+    continueOnError: 'flowBot.continueOnError',
+    maxGenerateRetries: 'flowBot.maxGenerateRetries',
     enableLogoOverlay: 'flowBot.enableLogoOverlay',
     logoFilePath: 'flowBot.logoFilePath',
     logoPosition: 'flowBot.logoPosition',
@@ -1234,7 +1304,9 @@ def render_home(flow_url: str) -> str:
     autoLogoOverlayAfterBatch: 'flowBot.autoLogoOverlayAfterBatch',
     enableSubtitles: 'flowBot.enableSubtitles',
     subtitleSource: 'flowBot.subtitleSource',
-    subtitleFontSize: 'flowBot.subtitleFontSize'
+    subtitleFontSize: 'flowBot.subtitleFontSize',
+    enableProductImageCleanup: 'flowBot.enableProductImageCleanup',
+    cleanupMode: 'flowBot.cleanupMode'
   };
   const FIELDS = [
     {key:'product_image', label:'product_image', help:'Cột chứa link ảnh sản phẩm.', required:false},
@@ -1307,8 +1379,17 @@ def render_home(flow_url: str) -> str:
     document.getElementById('auto-download-zip').addEventListener('change', persistSettings);
     document.getElementById('download-resolution').addEventListener('change', persistSettings);
     document.getElementById('video-model').addEventListener('change', persistSettings);
+    document.getElementById('aspect-ratio').addEventListener('change', persistSettings);
+    document.getElementById('multi-clip-mode').addEventListener('change', persistSettings);
+    document.getElementById('scene-builder-mode').addEventListener('change', persistSettings);
+    document.getElementById('target-final-duration').addEventListener('change', persistSettings);
+    document.getElementById('download-mode').addEventListener('change', persistSettings);
+    document.getElementById('continue-on-error').addEventListener('change', persistSettings);
+    document.getElementById('max-generate-retries').addEventListener('change', persistSettings);
     document.getElementById('enable-subtitles').addEventListener('change', persistSettings);
     document.getElementById('subtitle-source').addEventListener('change', persistSettings);
+    document.getElementById('enable-product-image-cleanup').addEventListener('change', persistSettings);
+    document.getElementById('cleanup-mode').addEventListener('change', persistSettings);
     document.getElementById('enable-logo-overlay').addEventListener('change', persistSettings);
     document.getElementById('logo-position').addEventListener('change', persistSettings);
     document.getElementById('auto-logo-overlay-after-batch').addEventListener('change', persistSettings);
@@ -1516,6 +1597,29 @@ def render_home(flow_url: str) -> str:
       const overlayBadgeClass = overlayStatus === 'success' ? 'badge-success' : (overlayStatus === 'failed' ? 'badge-error' : 'badge-muted');
       const subtitleStatus = item.subtitle_status || (item.subtitle_enabled ? 'pending' : 'disabled');
       const subtitleBadgeClass = subtitleStatus === 'success' ? 'badge-success' : (subtitleStatus === 'failed' ? 'badge-error' : 'badge-muted');
+      const cleanupStatus = item.image_cleanup_status || '-';
+      const cleanupBadgeClass = ['rembg','pillow','cached'].includes(cleanupStatus) ? 'badge-success' : (cleanupStatus === 'failed' ? 'badge-error' : 'badge-muted');
+      const clips = Array.isArray(item.clips) ? item.clips : [];
+      const clipsZipUrl = item.multi_clip && item.scene_group_id
+        ? `/api/storage/batches/${encodeURIComponent(data.batch_id)}/clips/${encodeURIComponent(item.scene_group_id)}/zip`
+        : '';
+      const sceneSummary = item.multi_clip
+        ? `Multi-clip - ${escapeHtml(item.clip_total || clips.length || 0)} clips - ${escapeHtml(item.merge_method || '-')}`
+        : `Scene ${escapeHtml(item.scene_number || 0)} / ${escapeHtml(item.scene_total || 0)} - ${escapeHtml(item.scene_role || 'single')}`;
+      const sceneIdHtml = item.scene_id ? `Native scene: ${escapeHtml(item.scene_id)}<br>` : '';
+      const clipListHtml = clips.length ? `
+        <div class="video-card-meta" style="display:grid;gap:.35rem">
+          ${clips.map(clip => `
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:.5rem">
+              <span>Clip ${escapeHtml(clip.clip_index || '')}: ${escapeHtml(clip.clip_role || 'clip')}</span>
+              <span>
+                ${clip.download_url ? `<button class="btn btn-outline" style="min-height:26px;padding:.2rem .5rem;font-size:.7rem" onclick="downloadBatchVideo('${escapeHtml(clip.download_url)}')">Clip</button>` : ''}
+                ${clip.last_frame_url ? `<button class="btn btn-outline" style="min-height:26px;padding:.2rem .5rem;font-size:.7rem" onclick="window.open('${escapeHtml(clip.last_frame_url)}','_blank')">Frame</button>` : ''}
+              </span>
+            </div>
+          `).join('')}
+        </div>
+      ` : '';
       return `
       <div class="video-card">
         ${item.preview_url && item.status === 'completed'
@@ -1524,8 +1628,9 @@ def render_home(flow_url: str) -> str:
         <div class="video-card-body">
           <p class="video-card-title">${escapeHtml(item.product_name || item.scene_title || 'Untitled video')}</p>
           <div class="video-card-meta">
-            Scene ${escapeHtml(item.scene_number || 0)} / ${escapeHtml(item.scene_total || 0)} • ${escapeHtml(item.scene_role || 'single')}<br>
+            ${sceneSummary}<br>
             ${escapeHtml(item.scene_group_id || '')}<br>
+            ${sceneIdHtml}
             ${escapeHtml(item.created_at || '')}<br>
             ${escapeHtml(formatFileSize(item.file_size || 0))}
           </div>
@@ -1534,13 +1639,16 @@ def render_home(flow_url: str) -> str:
             <span class="badge badge-outline">${escapeHtml(item.logo_position || '-')}</span>
             <span class="badge ${subtitleBadgeClass}">Subtitle ${escapeHtml(subtitleStatus)}</span>
             <span class="badge badge-outline">${escapeHtml(item.subtitle_source || '-')}</span>
+            <span class="badge ${cleanupBadgeClass}">Image ${escapeHtml(cleanupStatus)}</span>
           </div>
+          ${clipListHtml}
           <div class="video-card-actions">
             ${item.preview_url && item.status === 'completed'
               ? `<button class="btn btn-outline" onclick="previewBatchVideo('${escapeHtml(item.preview_url)}', '${escapeHtml(item.product_name || item.scene_title || 'Video preview')}')">View</button>
                  <button class="btn btn-outline" onclick="testBatchLogoOverlay('${escapeHtml(data.batch_id)}')">Test Logo</button>
                  ${item.raw_download_url ? `<button class="btn btn-outline" onclick="downloadBatchVideo('${escapeHtml(item.raw_download_url)}')">Raw</button>` : ''}
                  ${item.subtitle_download_url ? `<a class="btn btn-outline" href="${escapeHtml(item.subtitle_download_url)}" download>SRT</a>` : ''}
+                 ${clipsZipUrl ? `<a class="btn btn-outline" href="${escapeHtml(clipsZipUrl)}" download>All Clips</a>` : ''}
                  ${item.final_download_url ? `<button class="btn btn-primary" onclick="downloadBatchVideo('${escapeHtml(item.final_download_url)}')">Final</button>` : ''}`
               : `<span class="badge badge-error">${escapeHtml(item.error || item.status || 'Unavailable')}</span>`}
           </div>
@@ -1920,6 +2028,21 @@ def render_home(flow_url: str) -> str:
     if (videoModel !== null) {
       document.getElementById('video-model').value = videoModel;
     }
+    [
+      ['aspect-ratio', STORAGE.aspectRatio],
+      ['multi-clip-mode', STORAGE.multiClipMode],
+      ['scene-builder-mode', STORAGE.sceneBuilderMode],
+      ['target-final-duration', STORAGE.targetFinalDuration],
+      ['download-mode', STORAGE.downloadMode],
+      ['max-generate-retries', STORAGE.maxGenerateRetries],
+    ].forEach(([id, key]) => {
+      const value = localStorage.getItem(key);
+      if (value !== null) document.getElementById(id).value = value;
+    });
+    const continueOnError = localStorage.getItem(STORAGE.continueOnError);
+    if (continueOnError !== null) {
+      document.getElementById('continue-on-error').checked = (continueOnError === 'true');
+    }
     const enableLogoOverlay = localStorage.getItem(STORAGE.enableLogoOverlay);
     if (enableLogoOverlay !== null) {
       document.getElementById('enable-logo-overlay').checked = (enableLogoOverlay === 'true');
@@ -1935,6 +2058,14 @@ def render_home(flow_url: str) -> str:
     const subtitleFontSize = localStorage.getItem(STORAGE.subtitleFontSize);
     if (subtitleFontSize !== null) {
       document.getElementById('subtitle-font-size').value = subtitleFontSize;
+    }
+    const enableProductImageCleanup = localStorage.getItem(STORAGE.enableProductImageCleanup);
+    if (enableProductImageCleanup !== null) {
+      document.getElementById('enable-product-image-cleanup').checked = (enableProductImageCleanup === 'true');
+    }
+    const cleanupMode = localStorage.getItem(STORAGE.cleanupMode);
+    if (cleanupMode !== null) {
+      document.getElementById('cleanup-mode').value = cleanupMode;
     }
     const autoLogoOverlayAfterBatch = localStorage.getItem(STORAGE.autoLogoOverlayAfterBatch);
     if (autoLogoOverlayAfterBatch !== null) {
@@ -1973,9 +2104,18 @@ def render_home(flow_url: str) -> str:
     localStorage.setItem(STORAGE.autoDownloadZip, document.getElementById('auto-download-zip').checked);
     localStorage.setItem(STORAGE.downloadResolution, document.getElementById('download-resolution').value);
     localStorage.setItem(STORAGE.videoModel, document.getElementById('video-model').value);
+    localStorage.setItem(STORAGE.aspectRatio, document.getElementById('aspect-ratio').value);
+    localStorage.setItem(STORAGE.multiClipMode, document.getElementById('multi-clip-mode').value);
+    localStorage.setItem(STORAGE.sceneBuilderMode, document.getElementById('scene-builder-mode').value);
+    localStorage.setItem(STORAGE.targetFinalDuration, document.getElementById('target-final-duration').value);
+    localStorage.setItem(STORAGE.downloadMode, document.getElementById('download-mode').value);
+    localStorage.setItem(STORAGE.continueOnError, document.getElementById('continue-on-error').checked);
+    localStorage.setItem(STORAGE.maxGenerateRetries, document.getElementById('max-generate-retries').value);
     localStorage.setItem(STORAGE.enableSubtitles, document.getElementById('enable-subtitles').checked);
     localStorage.setItem(STORAGE.subtitleSource, document.getElementById('subtitle-source').value);
     localStorage.setItem(STORAGE.subtitleFontSize, document.getElementById('subtitle-font-size').value);
+    localStorage.setItem(STORAGE.enableProductImageCleanup, document.getElementById('enable-product-image-cleanup').checked);
+    localStorage.setItem(STORAGE.cleanupMode, document.getElementById('cleanup-mode').value);
     localStorage.setItem(STORAGE.enableLogoOverlay, document.getElementById('enable-logo-overlay').checked);
     localStorage.setItem(STORAGE.logoFilePath, document.getElementById('logo-file-path').value);
     localStorage.setItem(STORAGE.logoPosition, document.getElementById('logo-position').value);
@@ -2305,7 +2445,7 @@ def render_home(flow_url: str) -> str:
   function updatePostprocessFromLog(entry) {
     const message = String(entry.message || '').toLowerCase();
     const rawMessage = String(entry.message || '');
-    const durationMatch = rawMessage.match(/duration\s+([0-9]+(?:\.[0-9]+)?)s/i);
+    const durationMatch = rawMessage.match(/duration\\s+([0-9]+(?:\\.[0-9]+)?)s/i);
     if (durationMatch) postprocessDuration = Number(durationMatch[1]) || 0;
     if (message.includes('saved raw scene video')) {
       setPostprocessProgress(0, 22, 'Video saved', 'Preparing post-processing pipeline.');
@@ -2668,11 +2808,24 @@ def render_home(flow_url: str) -> str:
       cdp_port: Number(document.getElementById('cdp-port').value || 9222),
       scene_mode: sceneMode === 'auto_excel' && !datasetHasSceneColumns() ? 'skip' : sceneMode,
       video_model: document.getElementById('video-model').value || 'Veo 3.1 - Lite',
+      aspect_ratio: document.getElementById('aspect-ratio').value || '9:16',
+      multi_clip_mode: document.getElementById('multi-clip-mode').value || 'auto',
+      scene_builder_mode: document.getElementById('scene-builder-mode').value || 'native_flow',
+      target_final_duration: Number(document.getElementById('target-final-duration').value || 20),
+      download_mode: document.getElementById('download-mode').value || 'save_local',
+      continue_on_error: document.getElementById('continue-on-error').checked,
+      max_generate_retries: Number(document.getElementById('max-generate-retries').value || 1),
       enable_subtitles: document.getElementById('enable-subtitles').checked,
       subtitle_source: document.getElementById('subtitle-source').value || 'voiceover',
       subtitle_position: 'bottom',
       subtitle_font_size: Number(document.getElementById('subtitle-font-size').value || 18),
       subtitle_style: 'clean',
+      enable_product_image_cleanup: document.getElementById('enable-product-image-cleanup').checked,
+      cleanup_mode: document.getElementById('cleanup-mode').value || 'auto',
+      cleanup_background: 'transparent',
+      cleanup_sharpen: true,
+      cleanup_white_background_fallback: true,
+      cleanup_cache_enabled: true,
       enable_logo_overlay: document.getElementById('enable-logo-overlay').checked,
       logo_file_path: document.getElementById('logo-file-path').value.trim() || uploadedLogoPath || null,
       logo_position: document.getElementById('logo-position').value || 'top-right',

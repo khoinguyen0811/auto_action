@@ -343,6 +343,21 @@ def render_home(flow_url: str) -> str:
       border-color: var(--primary);
       box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.12);
     }
+    .tts-demo-panel {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto minmax(220px, 0.75fr);
+      gap: 0.75rem;
+      align-items: end;
+      padding: 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      background: var(--surface-muted);
+    }
+    .tts-demo-panel audio {
+      width: 100%;
+      min-width: 0;
+      height: 34px;
+    }
     .form-textarea {
       min-height: 260px;
       resize: vertical;
@@ -746,6 +761,8 @@ def render_home(flow_url: str) -> str:
       .preset-grid { grid-template-columns: 1fr; }
       .scene-mode-grid { grid-template-columns: 1fr; }
       .results-layout { grid-template-columns: 1fr; }
+      .tts-demo-panel { grid-template-columns: 1fr; align-items: stretch; }
+      .tts-demo-panel .btn { width: 100%; }
       .batch-list { max-height: none; }
       .span-all { grid-column: auto; }
       .btn-row { align-items: stretch; }
@@ -957,7 +974,7 @@ def render_home(flow_url: str) -> str:
             </div>
             <div class="span-all" style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.25rem;">
               <input type="checkbox" id="auto-download-zip" checked/>
-              <label for="auto-download-zip" style="color: var(--text); font-size: 0.875rem; cursor: pointer; user-select: none;">Tự động tải file ZIP chứa tất cả video (đã sắp xếp theo folder) khi batch hoàn thành</label>
+              <label for="auto-download-zip" style="color: var(--text); font-size: 0.875rem; cursor: pointer; user-select: none;">Tự động upload từng video vào folder batch trên Google Drive khi batch hoàn thành</label>
             </div>
             <div>
               <label class="form-label" for="download-resolution">Download Resolution</label>
@@ -986,6 +1003,63 @@ def render_home(flow_url: str) -> str:
             <div>
               <label class="form-label" for="subtitle-font-size">Subtitle Font Size</label>
               <input class="form-input" id="subtitle-font-size" type="number" value="18" min="10" max="48"/>
+            </div>
+            <div class="span-all" style="display:flex;align-items:center;gap:.5rem;margin-top:.25rem">
+              <input type="checkbox" id="enable-external-tts" data-ui-field="enable-external-tts" checked/>
+              <label for="enable-external-tts" style="color: var(--text); font-size: 0.875rem; cursor: pointer; user-select: none;">Vietnamese external TTS</label>
+            </div>
+            <div>
+              <label class="form-label" for="tts-provider">TTS Provider</label>
+              <select class="form-input" id="tts-provider" data-ui-field="tts-provider">
+                <option value="edge_tts" selected>edge_tts</option>
+                <option value="gtts">gtts</option>
+                <option value="azure">azure</option>
+                <option value="openai">openai</option>
+                <option value="none">none</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label" for="tts-voice">TTS Voice</label>
+              <select class="form-input" id="tts-voice" data-ui-field="tts-voice">
+                <option value="vi-VN-HoaiMyNeural" selected>HoaiMy - Vietnamese female</option>
+              </select>
+            </div>
+            <div class="span-all tts-demo-panel">
+              <div>
+                <label class="form-label" for="tts-demo-text">Voice Demo Text</label>
+                <input class="form-input" id="tts-demo-text" value="Xin chào, đây là bản nghe thử giọng đọc cho video sản phẩm." maxlength="280"/>
+              </div>
+              <button class="btn btn-outline" id="play-tts-demo" type="button">Play Demo</button>
+              <audio id="tts-demo-audio" controls preload="none"></audio>
+            </div>
+            <div>
+              <label class="form-label" for="tts-delivery">TTS Delivery</label>
+              <select class="form-input" id="tts-delivery" data-ui-field="tts-delivery">
+                <option value="balanced" selected>Balanced</option>
+                <option value="gentle">Gentle</option>
+                <option value="lively">Lively</option>
+                <option value="custom">Custom</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label" for="tts-rate">TTS Rate</label>
+              <input class="form-input" id="tts-rate" data-ui-field="tts-rate" value="+0%"/>
+            </div>
+            <div>
+              <label class="form-label" for="tts-pitch">TTS Pitch</label>
+              <input class="form-input" id="tts-pitch" data-ui-field="tts-pitch" value="+0Hz"/>
+            </div>
+            <div>
+              <label class="form-label" for="tts-volume">TTS Volume</label>
+              <input class="form-input" id="tts-volume" data-ui-field="tts-volume" type="number" value="1" min="0" max="3" step="0.05"/>
+            </div>
+            <div>
+              <label class="form-label" for="background-audio-volume">Background Volume</label>
+              <input class="form-input" id="background-audio-volume" data-ui-field="background-audio-volume" type="number" value="0.35" min="0" max="3" step="0.05"/>
+            </div>
+            <div>
+              <label class="form-label" for="voice-audio-volume">Voice Volume</label>
+              <input class="form-input" id="voice-audio-volume" data-ui-field="voice-audio-volume" type="number" value="1" min="0" max="3" step="0.05"/>
             </div>
             <div class="span-all" style="display:flex;align-items:center;gap:.5rem;margin-top:.25rem">
               <input type="checkbox" id="enable-product-image-cleanup" data-ui-field="enable-product-image-cleanup" checked/>
@@ -1235,7 +1309,7 @@ def render_home(flow_url: str) -> str:
         <div class="section-head">
           <div>
             <h2>Batch Video Storage</h2>
-            <p>Video đã lưu theo từng batch, có preview, tải lẻ và tải cả batch ZIP.</p>
+            <p>Video đã lưu theo từng batch, có preview, tải lẻ và upload folder batch lên Drive.</p>
           </div>
           <span class="badge badge-muted" id="results-status-badge">No batch</span>
         </div>
@@ -1305,6 +1379,16 @@ def render_home(flow_url: str) -> str:
     enableSubtitles: 'flowBot.enableSubtitles',
     subtitleSource: 'flowBot.subtitleSource',
     subtitleFontSize: 'flowBot.subtitleFontSize',
+    enableExternalTts: 'flowBot.enableExternalTts',
+    ttsProvider: 'flowBot.ttsProvider',
+    ttsVoice: 'flowBot.ttsVoice',
+    ttsDemoText: 'flowBot.ttsDemoText',
+    ttsDelivery: 'flowBot.ttsDelivery',
+    ttsRate: 'flowBot.ttsRate',
+    ttsPitch: 'flowBot.ttsPitch',
+    ttsVolume: 'flowBot.ttsVolume',
+    backgroundAudioVolume: 'flowBot.backgroundAudioVolume',
+    voiceAudioVolume: 'flowBot.voiceAudioVolume',
     enableProductImageCleanup: 'flowBot.enableProductImageCleanup',
     cleanupMode: 'flowBot.cleanupMode'
   };
@@ -1314,6 +1398,27 @@ def render_home(flow_url: str) -> str:
     {key:'short_description', label:'short_description', help:'Cột chứa mô tả ngắn.', required:true},
     {key:'long_description', label:'long_description', help:'Cột chứa mô tả dài hoặc chi tiết sản phẩm.', required:true}
   ];
+  const TTS_VOICES = [
+    {value:'vi-VN-HoaiMyNeural', label:'HoaiMy - Vietnamese female', group:'Vietnamese'},
+    {value:'vi-VN-NamMinhNeural', label:'NamMinh - Vietnamese male', group:'Vietnamese'},
+    {value:'en-US-AvaMultilingualNeural', label:'Ava multilingual - female', group:'Multilingual'},
+    {value:'en-US-EmmaMultilingualNeural', label:'Emma multilingual - female', group:'Multilingual'},
+    {value:'en-US-AndrewMultilingualNeural', label:'Andrew multilingual - male', group:'Multilingual'},
+    {value:'en-US-BrianMultilingualNeural', label:'Brian multilingual - male', group:'Multilingual'},
+    {value:'en-AU-WilliamMultilingualNeural', label:'William multilingual - male', group:'Multilingual'},
+    {value:'fr-FR-VivienneMultilingualNeural', label:'Vivienne multilingual - female', group:'Multilingual'},
+    {value:'fr-FR-RemyMultilingualNeural', label:'Remy multilingual - male', group:'Multilingual'},
+    {value:'de-DE-SeraphinaMultilingualNeural', label:'Seraphina multilingual - female', group:'Multilingual'},
+    {value:'de-DE-FlorianMultilingualNeural', label:'Florian multilingual - male', group:'Multilingual'},
+    {value:'it-IT-GiuseppeMultilingualNeural', label:'Giuseppe multilingual - male', group:'Multilingual'},
+    {value:'ko-KR-HyunsuMultilingualNeural', label:'Hyunsu multilingual - male', group:'Multilingual'},
+    {value:'pt-BR-ThalitaMultilingualNeural', label:'Thalita multilingual - female', group:'Multilingual'}
+  ];
+  const TTS_DELIVERY_PRESETS = {
+    balanced: {rate:'+0%', pitch:'+0Hz'},
+    gentle: {rate:'-8%', pitch:'+2Hz'},
+    lively: {rate:'+6%', pitch:'+8Hz'}
+  };
   const PIPELINE = ['Excel Loaded','Mapping Ready','Chrome Connected','Step 1 Filled','Brainstorm Done','Video Generated','Create Next'];
   const SCENE_FIELDS = ['scene_group_id','scene_number','scene_total','scene_role','scene_title','scene_continuity_notes'];
   let evtSource = null;
@@ -1339,6 +1444,7 @@ def render_home(flow_url: str) -> str:
   document.addEventListener('DOMContentLoaded', () => {
     renderPipeline();
     renderMappingFields();
+    renderTtsVoiceOptions();
     loadSettings();
     initFloatingRunButton();
     document.getElementById('file').addEventListener('change', event => {
@@ -1373,8 +1479,14 @@ def render_home(flow_url: str) -> str:
         persistSettings();
       });
     });
-    ['slow-mo','wait-timeout','start','count','logo-width-percent','logo-margin','logo-file-path','subtitle-font-size'].forEach(id => {
+    ['slow-mo','wait-timeout','start','count','logo-width-percent','logo-margin','logo-file-path','subtitle-font-size','tts-demo-text','tts-volume','background-audio-volume','voice-audio-volume'].forEach(id => {
       document.getElementById(id).addEventListener('input', persistSettings);
+    });
+    ['tts-rate','tts-pitch'].forEach(id => {
+      document.getElementById(id).addEventListener('input', () => {
+        document.getElementById('tts-delivery').value = 'custom';
+        persistSettings();
+      });
     });
     document.getElementById('auto-download-zip').addEventListener('change', persistSettings);
     document.getElementById('download-resolution').addEventListener('change', persistSettings);
@@ -1388,6 +1500,11 @@ def render_home(flow_url: str) -> str:
     document.getElementById('max-generate-retries').addEventListener('change', persistSettings);
     document.getElementById('enable-subtitles').addEventListener('change', persistSettings);
     document.getElementById('subtitle-source').addEventListener('change', persistSettings);
+    document.getElementById('enable-external-tts').addEventListener('change', persistSettings);
+    document.getElementById('tts-provider').addEventListener('change', persistSettings);
+    document.getElementById('tts-voice').addEventListener('change', persistSettings);
+    document.getElementById('tts-delivery').addEventListener('change', applyTtsDeliveryPreset);
+    document.getElementById('play-tts-demo').addEventListener('click', playTtsDemo);
     document.getElementById('enable-product-image-cleanup').addEventListener('change', persistSettings);
     document.getElementById('cleanup-mode').addEventListener('change', persistSettings);
     document.getElementById('enable-logo-overlay').addEventListener('change', persistSettings);
@@ -1432,6 +1549,95 @@ def render_home(flow_url: str) -> str:
 
   function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+  }
+
+  function renderTtsVoiceOptions() {
+    const select = document.getElementById('tts-voice');
+    if (!select) return;
+    const selected = localStorage.getItem(STORAGE.ttsVoice) || select.value || 'vi-VN-HoaiMyNeural';
+    select.innerHTML = '';
+    const groups = [...new Set(TTS_VOICES.map(item => item.group))];
+    groups.forEach(group => {
+      const optgroup = document.createElement('optgroup');
+      optgroup.label = group;
+      TTS_VOICES.filter(item => item.group === group).forEach(item => {
+        const option = document.createElement('option');
+        option.value = item.value;
+        option.textContent = item.label;
+        optgroup.appendChild(option);
+      });
+      select.appendChild(optgroup);
+    });
+    setTtsVoiceValue(selected);
+  }
+
+  function setTtsVoiceValue(value) {
+    const select = document.getElementById('tts-voice');
+    if (!select) return;
+    const normalized = String(value || '').trim();
+    if (!normalized) return;
+    const existing = Array.from(select.options).some(option => option.value === normalized);
+    if (!existing) {
+      const option = document.createElement('option');
+      option.value = normalized;
+      option.textContent = `Custom saved - ${normalized}`;
+      select.appendChild(option);
+    }
+    select.value = normalized;
+  }
+
+  function applyTtsDeliveryPreset() {
+    const delivery = document.getElementById('tts-delivery').value || 'balanced';
+    const preset = TTS_DELIVERY_PRESETS[delivery];
+    if (preset) {
+      document.getElementById('tts-rate').value = preset.rate;
+      document.getElementById('tts-pitch').value = preset.pitch;
+    }
+    persistSettings();
+  }
+
+  async function playTtsDemo() {
+    const provider = document.getElementById('tts-provider').value || 'edge_tts';
+    if (provider !== 'edge_tts') {
+      return alertBox('warning', 'Demo supports edge_tts', 'Chọn provider edge_tts để nghe thử voice trong danh sách này.');
+    }
+    const button = document.getElementById('play-tts-demo');
+    const audio = document.getElementById('tts-demo-audio');
+    const voice = document.getElementById('tts-voice').value || 'vi-VN-HoaiMyNeural';
+    const rate = document.getElementById('tts-rate').value.trim() || '+0%';
+    const pitch = document.getElementById('tts-pitch').value.trim() || '+0Hz';
+    const text = document.getElementById('tts-demo-text').value.trim() || 'Xin chào, đây là bản nghe thử giọng đọc cho video sản phẩm.';
+    persistSettings();
+    button.disabled = true;
+    const previousText = button.textContent;
+    button.textContent = 'Loading...';
+    setStatus('Đang tạo demo voice...');
+    try {
+      const params = new URLSearchParams({voice, rate, pitch, text});
+      const resp = await fetch(`/api/tts/demo?${params.toString()}`);
+      if (!resp.ok) {
+        let message = `HTTP ${resp.status}`;
+        try {
+          const data = await resp.json();
+          message = data.detail || message;
+        } catch {}
+        throw new Error(message);
+      }
+      const blob = await resp.blob();
+      if (audio.dataset.objectUrl) URL.revokeObjectURL(audio.dataset.objectUrl);
+      const url = URL.createObjectURL(blob);
+      audio.dataset.objectUrl = url;
+      audio.src = url;
+      await audio.play().catch(() => undefined);
+      setStatus('Demo voice đã sẵn sàng.');
+    } catch (err) {
+      const message = err && err.message ? err.message : String(err);
+      setStatus('Tạo demo voice thất bại: ' + message, false);
+      alertBox('error', 'Voice demo failed', message);
+    } finally {
+      button.disabled = false;
+      button.textContent = previousText;
+    }
   }
 
   function setStatus(msg, ok=true) {
@@ -1583,7 +1789,7 @@ def render_home(flow_url: str) -> str:
     if (actions) {
       actions.innerHTML = data.zip_url
         ? `<button class="btn btn-outline" onclick="testBatchLogoOverlay('${escapeHtml(data.batch_id)}')">Test Logo Overlay</button>
-           <button class="btn btn-primary" onclick="downloadBatchZip('${escapeHtml(data.batch_id)}')">Download Batch ZIP</button>`
+           <button class="btn btn-primary" onclick="downloadBatchZip('${escapeHtml(data.batch_id)}')">Upload Batch Folder to Drive</button>`
         : '';
     }
     const items = Array.isArray(data.items) ? data.items : [];
@@ -1613,7 +1819,7 @@ def render_home(flow_url: str) -> str:
             <div style="display:flex;align-items:center;justify-content:space-between;gap:.5rem">
               <span>Clip ${escapeHtml(clip.clip_index || '')}: ${escapeHtml(clip.clip_role || 'clip')}</span>
               <span>
-                ${clip.download_url ? `<button class="btn btn-outline" style="min-height:26px;padding:.2rem .5rem;font-size:.7rem" onclick="downloadBatchVideo('${escapeHtml(clip.download_url)}')">Clip</button>` : ''}
+                ${clip.download_url ? `<button class="btn btn-outline" style="min-height:26px;padding:.2rem .5rem;font-size:.7rem" onclick="downloadBatchVideo('${escapeHtml(clip.download_url)}')">Clip -> Drive</button>` : ''}
                 ${clip.last_frame_url ? `<button class="btn btn-outline" style="min-height:26px;padding:.2rem .5rem;font-size:.7rem" onclick="window.open('${escapeHtml(clip.last_frame_url)}','_blank')">Frame</button>` : ''}
               </span>
             </div>
@@ -1646,10 +1852,10 @@ def render_home(flow_url: str) -> str:
             ${item.preview_url && item.status === 'completed'
               ? `<button class="btn btn-outline" onclick="previewBatchVideo('${escapeHtml(item.preview_url)}', '${escapeHtml(item.product_name || item.scene_title || 'Video preview')}')">View</button>
                  <button class="btn btn-outline" onclick="testBatchLogoOverlay('${escapeHtml(data.batch_id)}')">Test Logo</button>
-                 ${item.raw_download_url ? `<button class="btn btn-outline" onclick="downloadBatchVideo('${escapeHtml(item.raw_download_url)}')">Raw</button>` : ''}
+                 ${item.raw_download_url ? `<button class="btn btn-outline" onclick="downloadBatchVideo('${escapeHtml(item.raw_download_url)}')">Raw -> Drive</button>` : ''}
                  ${item.subtitle_download_url ? `<a class="btn btn-outline" href="${escapeHtml(item.subtitle_download_url)}" download>SRT</a>` : ''}
-                 ${clipsZipUrl ? `<a class="btn btn-outline" href="${escapeHtml(clipsZipUrl)}" download>All Clips</a>` : ''}
-                 ${item.final_download_url ? `<button class="btn btn-primary" onclick="downloadBatchVideo('${escapeHtml(item.final_download_url)}')">Final</button>` : ''}`
+                 ${clipsZipUrl ? `<button class="btn btn-outline" onclick="uploadClipsZipToDrive('${escapeHtml(data.batch_id)}', '${escapeHtml(item.scene_group_id)}')">All Clips -> Drive</button>` : ''}
+                 ${item.final_download_url ? `<button class="btn btn-primary" onclick="downloadBatchVideo('${escapeHtml(item.final_download_url)}')">Final -> Drive</button>` : ''}`
               : `<span class="badge badge-error">${escapeHtml(item.error || item.status || 'Unavailable')}</span>`}
           </div>
         </div>
@@ -1675,7 +1881,7 @@ def render_home(flow_url: str) -> str:
     return input ? (input.value || '1080p') : '1080p';
   }
 
-  async function downloadBatchVideo(url) {
+  async function downloadBatchVideoLocalLegacy(url) {
     const resolution = getDownloadResolution();
     const separator = url.includes('?') ? '&' : '?';
     const resolvedUrl = `${url}${separator}resolution=${encodeURIComponent(resolution)}`;
@@ -1732,7 +1938,7 @@ def render_home(flow_url: str) -> str:
     else mark.style.top = `${marginPercent}%`;
   }
 
-  async function downloadBatchZip(batchId) {
+  async function downloadBatchZipLocalLegacy(batchId) {
     const resolution = getDownloadResolution();
     const isOriginal = resolution === 'original';
     const loadingText = isOriginal
@@ -1776,6 +1982,136 @@ def render_home(flow_url: str) -> str:
       const message = err && err.message ? err.message : String(err);
       setStatus('Tải ZIP thất bại: ' + message, false);
       alertBox('error', 'Download failed', message);
+    }
+  }
+
+  async function downloadBatchVideo(url) {
+    const resolution = getDownloadResolution();
+    const resolvedUrl = `${url}/drive-upload?resolution=${encodeURIComponent(resolution)}`;
+    const isOriginal = resolution === 'original';
+    const loadingText = isOriginal
+      ? 'Uploading video to Google Drive...'
+      : `Upscaling video to ${resolution}, then uploading to Google Drive...`;
+    setStatus(loadingText);
+    setPostprocessProgress(3, 82, isOriginal ? 'Uploading video' : 'Upscaling video', loadingText);
+    try {
+      const resp = await fetch(resolvedUrl, {method: 'POST'});
+      if (!resp.ok) {
+        let message = `HTTP ${resp.status}`;
+        try {
+          const data = await resp.json();
+          message = data.detail || message;
+        } catch {}
+        throw new Error(message);
+      }
+      const data = await resp.json();
+      const link = data.drive_web_view_link || data.drive_web_content_link || '';
+      setPostprocessProgress(4, 100, 'Google Drive upload ready', isOriginal ? 'Original video uploaded.' : `${resolution} upscale uploaded.`);
+      setStatus('Uploaded video to Google Drive.');
+      if (window.Swal) {
+        Swal.fire({
+          icon: 'success',
+          title: 'Uploaded to Google Drive',
+          html: link ? `<a href="${escapeHtml(link)}" target="_blank" rel="noopener">Open file on Drive</a>` : escapeHtml(data.drive_file_name || 'Upload completed'),
+          confirmButtonColor: '#4f46e5'
+        });
+      }
+    } catch (err) {
+      const message = err && err.message ? err.message : String(err);
+      setStatus('Google Drive upload failed: ' + message, false);
+      alertBox('error', 'Google Drive upload failed', message);
+    }
+  }
+
+  async function downloadBatchZip(batchId) {
+    const resolution = getDownloadResolution();
+    const isOriginal = resolution === 'original';
+    const loadingText = isOriginal
+      ? 'Creating Drive batch folder and uploading videos...'
+      : `Upscaling videos to ${resolution}, then uploading to a Drive batch folder...`;
+    setStatus(loadingText);
+    setPostprocessProgress(3, 84, isOriginal ? 'Uploading batch folder' : 'Upscaling videos', loadingText);
+    if (window.Swal) {
+      Swal.fire({
+        title: loadingText,
+        allowOutsideClick: false,
+        allowEscapeKey: false,
+        didOpen: () => Swal.showLoading()
+      });
+    }
+    try {
+      const url = `/api/storage/batches/${encodeURIComponent(batchId)}/drive-upload?resolution=${encodeURIComponent(resolution)}`;
+      const resp = await fetch(url, {method: 'POST'});
+      if (!resp.ok) {
+        let message = `HTTP ${resp.status}`;
+        try {
+          const data = await resp.json();
+          message = data.detail || message;
+        } catch {}
+        throw new Error(message);
+      }
+      const data = await resp.json();
+      const link = data.drive_folder_link || data.drive_web_view_link || data.drive_web_content_link || '';
+      if (window.Swal) Swal.close();
+      setPostprocessProgress(4, 100, 'Google Drive upload ready', `${escapeHtml(data.uploaded_count || 0)} videos uploaded.`);
+      setStatus('Uploaded batch videos to Google Drive.');
+      if (window.Swal) {
+        Swal.fire({
+          icon: 'success',
+          title: 'Uploaded to Google Drive',
+          html: link ? `<a href="${escapeHtml(link)}" target="_blank" rel="noopener">Open batch folder on Drive</a>` : escapeHtml(data.drive_folder_name || 'Upload completed'),
+          confirmButtonColor: '#4f46e5'
+        });
+      }
+    } catch (err) {
+      if (window.Swal) Swal.close();
+      const message = err && err.message ? err.message : String(err);
+      setStatus('Google Drive upload failed: ' + message, false);
+      alertBox('error', 'Google Drive upload failed', message);
+    }
+  }
+
+  async function uploadClipsZipToDrive(batchId, sceneGroupId) {
+    const loadingText = 'Packaging clips and uploading to Google Drive...';
+    setStatus(loadingText);
+    setPostprocessProgress(3, 82, 'Uploading clips ZIP', loadingText);
+    if (window.Swal) {
+      Swal.fire({
+        title: loadingText,
+        allowOutsideClick: false,
+        allowEscapeKey: false,
+        didOpen: () => Swal.showLoading()
+      });
+    }
+    try {
+      const url = `/api/storage/batches/${encodeURIComponent(batchId)}/clips/${encodeURIComponent(sceneGroupId)}/drive-upload`;
+      const resp = await fetch(url, {method: 'POST'});
+      if (!resp.ok) {
+        let message = `HTTP ${resp.status}`;
+        try {
+          const data = await resp.json();
+          message = data.detail || message;
+        } catch {}
+        throw new Error(message);
+      }
+      const data = await resp.json();
+      const link = data.drive_web_view_link || data.drive_web_content_link || '';
+      if (window.Swal) Swal.close();
+      setPostprocessProgress(4, 100, 'Google Drive upload ready', 'Clips ZIP uploaded.');
+      setStatus('Uploaded clips ZIP to Google Drive.');
+      if (window.Swal) {
+        Swal.fire({
+          icon: 'success',
+          title: 'Uploaded to Google Drive',
+          html: link ? `<a href="${escapeHtml(link)}" target="_blank" rel="noopener">Open clips ZIP on Drive</a>` : escapeHtml(data.drive_file_name || 'Upload completed'),
+          confirmButtonColor: '#4f46e5'
+        });
+      }
+    } catch (err) {
+      if (window.Swal) Swal.close();
+      const message = err && err.message ? err.message : String(err);
+      setStatus('Google Drive upload failed: ' + message, false);
+      alertBox('error', 'Google Drive upload failed', message);
     }
   }
 
@@ -2059,6 +2395,30 @@ def render_home(flow_url: str) -> str:
     if (subtitleFontSize !== null) {
       document.getElementById('subtitle-font-size').value = subtitleFontSize;
     }
+    const enableExternalTts = localStorage.getItem(STORAGE.enableExternalTts);
+    if (enableExternalTts !== null) {
+      document.getElementById('enable-external-tts').checked = (enableExternalTts === 'true');
+    }
+    [
+      ['tts-provider', STORAGE.ttsProvider],
+      ['tts-delivery', STORAGE.ttsDelivery],
+      ['tts-rate', STORAGE.ttsRate],
+      ['tts-pitch', STORAGE.ttsPitch],
+      ['tts-volume', STORAGE.ttsVolume],
+      ['background-audio-volume', STORAGE.backgroundAudioVolume],
+      ['voice-audio-volume', STORAGE.voiceAudioVolume],
+    ].forEach(([id, key]) => {
+      const value = localStorage.getItem(key);
+      if (value !== null) document.getElementById(id).value = value;
+    });
+    const ttsVoice = localStorage.getItem(STORAGE.ttsVoice);
+    if (ttsVoice !== null) {
+      setTtsVoiceValue(ttsVoice);
+    }
+    const ttsDemoText = localStorage.getItem(STORAGE.ttsDemoText);
+    if (ttsDemoText !== null) {
+      document.getElementById('tts-demo-text').value = ttsDemoText;
+    }
     const enableProductImageCleanup = localStorage.getItem(STORAGE.enableProductImageCleanup);
     if (enableProductImageCleanup !== null) {
       document.getElementById('enable-product-image-cleanup').checked = (enableProductImageCleanup === 'true');
@@ -2114,6 +2474,16 @@ def render_home(flow_url: str) -> str:
     localStorage.setItem(STORAGE.enableSubtitles, document.getElementById('enable-subtitles').checked);
     localStorage.setItem(STORAGE.subtitleSource, document.getElementById('subtitle-source').value);
     localStorage.setItem(STORAGE.subtitleFontSize, document.getElementById('subtitle-font-size').value);
+    localStorage.setItem(STORAGE.enableExternalTts, document.getElementById('enable-external-tts').checked);
+    localStorage.setItem(STORAGE.ttsProvider, document.getElementById('tts-provider').value);
+    localStorage.setItem(STORAGE.ttsVoice, document.getElementById('tts-voice').value);
+    localStorage.setItem(STORAGE.ttsDemoText, document.getElementById('tts-demo-text').value);
+    localStorage.setItem(STORAGE.ttsDelivery, document.getElementById('tts-delivery').value);
+    localStorage.setItem(STORAGE.ttsRate, document.getElementById('tts-rate').value);
+    localStorage.setItem(STORAGE.ttsPitch, document.getElementById('tts-pitch').value);
+    localStorage.setItem(STORAGE.ttsVolume, document.getElementById('tts-volume').value);
+    localStorage.setItem(STORAGE.backgroundAudioVolume, document.getElementById('background-audio-volume').value);
+    localStorage.setItem(STORAGE.voiceAudioVolume, document.getElementById('voice-audio-volume').value);
     localStorage.setItem(STORAGE.enableProductImageCleanup, document.getElementById('enable-product-image-cleanup').checked);
     localStorage.setItem(STORAGE.cleanupMode, document.getElementById('cleanup-mode').value);
     localStorage.setItem(STORAGE.enableLogoOverlay, document.getElementById('enable-logo-overlay').checked);
@@ -2820,6 +3190,14 @@ def render_home(flow_url: str) -> str:
       subtitle_position: 'bottom',
       subtitle_font_size: Number(document.getElementById('subtitle-font-size').value || 18),
       subtitle_style: 'clean',
+      enable_external_tts: document.getElementById('enable-external-tts').checked,
+      tts_provider: document.getElementById('tts-provider').value || 'edge_tts',
+      tts_voice: document.getElementById('tts-voice').value.trim() || 'vi-VN-HoaiMyNeural',
+      tts_rate: document.getElementById('tts-rate').value.trim() || '+0%',
+      tts_pitch: document.getElementById('tts-pitch').value.trim() || '+0Hz',
+      tts_volume: Number(document.getElementById('tts-volume').value || 1),
+      background_audio_volume: Number(document.getElementById('background-audio-volume').value || 0.35),
+      voice_audio_volume: Number(document.getElementById('voice-audio-volume').value || 1),
       enable_product_image_cleanup: document.getElementById('enable-product-image-cleanup').checked,
       cleanup_mode: document.getElementById('cleanup-mode').value || 'auto',
       cleanup_background: 'transparent',

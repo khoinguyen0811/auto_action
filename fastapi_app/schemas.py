@@ -40,6 +40,14 @@ class RunRequest(BaseModel):
     subtitle_position: Literal["bottom", "top"] = "bottom"
     subtitle_font_size: int = Field(default=18, ge=10, le=48)
     subtitle_style: Literal["clean"] = "clean"
+    enable_external_tts: bool = True
+    tts_provider: Literal["edge_tts", "gtts", "azure", "openai", "none"] = "edge_tts"
+    tts_voice: str = "vi-VN-HoaiMyNeural"
+    tts_rate: str = "+0%"
+    tts_pitch: str = "+0Hz"
+    tts_volume: float = Field(default=1.0, ge=0.0, le=3.0)
+    background_audio_volume: float = Field(default=0.35, ge=0.0, le=3.0)
+    voice_audio_volume: float = Field(default=1.0, ge=0.0, le=3.0)
     enable_product_image_cleanup: bool = True
     cleanup_mode: Literal["auto", "remove_background", "sharpen_only", "none"] = "auto"
     cleanup_background: Literal["transparent", "white"] = "transparent"

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import os
+import re
 import shutil
 import subprocess
 import threading
@@ -41,9 +44,37 @@ LOGO_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 DATASET_INDEX_PATH = UPLOAD_DIR / "datasets.json"
 STORAGE_DIR = BASE_DIR / "bot-output" / "storage"
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+TTS_DEMO_DIR = BASE_DIR / "bot-output" / "tts-demo"
+TTS_DEMO_DIR.mkdir(parents=True, exist_ok=True)
 VIDEO_FILE_SUFFIXES = {".mp4", ".mov", ".webm", ".mkv", ".avi"}
+DEFAULT_GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE = Path(
+    r"C:\Users\acer\Downloads\videoflow-499909-ff81e62cc0fd.json"
+)
+DEFAULT_GOOGLE_DRIVE_OAUTH_CLIENT_FILE = BASE_DIR / "google-oauth-client.json"
+FALLBACK_GOOGLE_DRIVE_OAUTH_CLIENT_FILE = Path(r"C:\Users\acer\Downloads\google-oauth-client.json")
+DEFAULT_GOOGLE_DRIVE_TOKEN_FILE = BASE_DIR / "bot-output" / "google-drive-token.json"
+DEFAULT_GOOGLE_DRIVE_FOLDER_ID = ""
+DEFAULT_GOOGLE_DRIVE_ROOT_FOLDER_NAME = "SRC_FLOW_VIDEO"
+GOOGLE_DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
 FLOW_URL = "https://labs.google/fx/vi/tools/flow/project/29290e6e-cefb-45dc-bb4a-7d536bf5b33f/tool/fd2e21f2-9304-4ec9-8026-866a0672264c"
+
+EDGE_TTS_DEMO_VOICES = {
+    "vi-VN-HoaiMyNeural",
+    "vi-VN-NamMinhNeural",
+    "en-US-AvaMultilingualNeural",
+    "en-US-EmmaMultilingualNeural",
+    "en-US-AndrewMultilingualNeural",
+    "en-US-BrianMultilingualNeural",
+    "en-AU-WilliamMultilingualNeural",
+    "fr-FR-VivienneMultilingualNeural",
+    "fr-FR-RemyMultilingualNeural",
+    "de-DE-SeraphinaMultilingualNeural",
+    "de-DE-FlorianMultilingualNeural",
+    "it-IT-GiuseppeMultilingualNeural",
+    "ko-KR-HyunsuMultilingualNeural",
+    "pt-BR-ThalitaMultilingualNeural",
+}
 
 
 def serialize_dataset(dataset: UploadedDataset) -> dict:
@@ -73,6 +104,49 @@ def serialize_run(record: RunRecord) -> dict:
         "options": record.options,
         "error": record.error,
     }
+
+
+@app.get("/api/tts/demo")
+async def demo_tts_audio(
+    voice: str = Query(default="vi-VN-HoaiMyNeural", min_length=3, max_length=80),
+    rate: str = Query(default="+0%", min_length=2, max_length=8),
+    pitch: str = Query(default="+0Hz", min_length=3, max_length=8),
+    text: str = Query(
+        default="Xin chào, đây là bản nghe thử giọng đọc cho video sản phẩm.",
+        min_length=1,
+        max_length=280,
+    ),
+) -> FileResponse:
+    voice = voice.strip()
+    rate = rate.strip() or "+0%"
+    pitch = pitch.strip() or "+0Hz"
+    text = " ".join(text.split())
+    if voice not in EDGE_TTS_DEMO_VOICES:
+        raise HTTPException(status_code=400, detail="Voice is not available for demo.")
+    if not re.fullmatch(r"[+-]\d{1,3}%", rate):
+        raise HTTPException(status_code=400, detail="TTS rate must look like +0% or -10%.")
+    if not re.fullmatch(r"[+-]\d{1,3}Hz", pitch):
+        raise HTTPException(status_code=400, detail="TTS pitch must look like +0Hz or +8Hz.")
+
+    digest = hashlib.sha1(f"{voice}\0{rate}\0{pitch}\0{text}".encode("utf-8")).hexdigest()[:20]
+    output_path = TTS_DEMO_DIR / f"{digest}.mp3"
+    if not output_path.exists() or output_path.stat().st_size <= 0:
+        try:
+            import edge_tts
+
+            communicate = edge_tts.Communicate(text, voice=voice, rate=rate, pitch=pitch)
+            await communicate.save(output_path.as_posix())
+        except Exception as exc:
+            with suppress(Exception):
+                output_path.unlink()
+            raise HTTPException(status_code=500, detail=f"Cannot generate voice demo: {exc}") from exc
+
+    return FileResponse(
+        output_path,
+        media_type="audio/mpeg",
+        filename=f"{voice}-demo.mp3",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 def build_dataset_metadata(
@@ -677,6 +751,24 @@ def get_storage_batch_subtitle(batch_id: str, filename: str):
 
 @app.get("/api/storage/batches/{batch_id}/clips/{scene_group_id}/zip")
 def download_storage_batch_clips_zip(batch_id: str, scene_group_id: str):
+    zip_path = build_storage_batch_clips_zip(batch_id, scene_group_id)
+    return FileResponse(zip_path, filename=zip_path.name, media_type="application/zip")
+
+
+@app.post("/api/storage/batches/{batch_id}/clips/{scene_group_id}/drive-upload")
+def upload_storage_batch_clips_zip_to_drive(batch_id: str, scene_group_id: str) -> dict:
+    zip_path = build_storage_batch_clips_zip(batch_id, scene_group_id)
+    drive_result = upload_file_to_google_drive(zip_path, zip_path.name, "application/zip")
+    return {
+        "status": "success",
+        "batch_id": batch_id,
+        "scene_group_id": scene_group_id,
+        "file_name": zip_path.name,
+        **drive_result,
+    }
+
+
+def build_storage_batch_clips_zip(batch_id: str, scene_group_id: str) -> Path:
     batch_dir, _ = load_batch_manifest(batch_id)
     safe_group = Path(scene_group_id).name
     clips_dir = (batch_dir / "clips" / safe_group).resolve()
@@ -690,7 +782,7 @@ def download_storage_batch_clips_zip(batch_id: str, scene_group_id: str):
         for source in sorted(clips_dir.iterdir()):
             if source.is_file() and source.name != "manifest.json":
                 archive.write(source, arcname=source.name)
-    return FileResponse(zip_path, filename=f"{safe_group}-clips.zip", media_type="application/zip")
+    return zip_path
 
 
 @app.get("/api/storage/batches/{batch_id}/files/{storage_path:path}")
@@ -717,6 +809,46 @@ def get_storage_batch_file(batch_id: str, storage_path: str, resolution: str = Q
 
 @app.get("/api/storage/batches/{batch_id}/zip")
 def download_storage_batch_zip(batch_id: str, resolution: str = Query("1080p")):
+    zip_path, resolution_label = build_storage_batch_zip(batch_id, resolution)
+    return FileResponse(zip_path, filename=f"{batch_id}-{resolution_label}.zip", media_type="application/zip")
+
+
+@app.post("/api/storage/batches/{batch_id}/drive-upload")
+def upload_storage_batch_zip_to_drive(batch_id: str, resolution: str = Query("1080p")) -> dict:
+    return upload_batch_videos_to_google_drive(batch_id, resolution)
+
+
+@app.post("/api/storage/batches/{batch_id}/files/{storage_path:path}/drive-upload")
+def upload_storage_batch_file_to_drive(batch_id: str, storage_path: str, resolution: str = Query("original")) -> dict:
+    batch_dir, _ = load_batch_manifest(batch_id)
+    target = (STORAGE_DIR / storage_path) if storage_path.startswith("storage/") else (batch_dir / storage_path)
+    resolved_target = target.resolve()
+    resolved_root = batch_dir.resolve()
+    if resolved_root not in resolved_target.parents and resolved_target != resolved_root:
+        raise HTTPException(status_code=400, detail="Invalid file path.")
+    if not resolved_target.exists() or not resolved_target.is_file():
+        raise HTTPException(status_code=404, detail="Video file not found.")
+    target_short_side, resolution_label = parse_zip_resolution(resolution)
+    upload_target = resolved_target
+    if target_short_side is not None and resolved_target.suffix.lower() in VIDEO_FILE_SUFFIXES:
+        upload_target = upscale_video_for_zip(
+            resolved_target,
+            batch_dir,
+            resolved_target.relative_to(batch_dir),
+            target_short_side,
+        )
+    upload_name = f"{resolved_target.stem}-{resolution_label}{resolved_target.suffix}" if resolution_label != "original" else resolved_target.name
+    drive_result = upload_file_to_google_drive(upload_target, upload_name, "video/mp4")
+    return {
+        "status": "success",
+        "batch_id": batch_id,
+        "resolution": resolution_label,
+        "file_name": upload_name,
+        **drive_result,
+    }
+
+
+def build_storage_batch_zip(batch_id: str, resolution: str = "1080p") -> tuple[Path, str]:
     batch_dir, manifest = load_batch_manifest(batch_id)
     target_short_side, resolution_label = parse_zip_resolution(resolution)
     zip_path = batch_dir / f"{batch_id}-{resolution_label}.zip"
@@ -734,7 +866,343 @@ def download_storage_batch_zip(batch_id: str, resolution: str = Query("1080p")):
             archive_path = upscale_video_for_zip(file_path, batch_dir, source_relative_path, target_short_side)
             archive.write(archive_path, arcname=source_relative_path)
             archived_paths.add(source_relative_path)
-    return FileResponse(zip_path, filename=f"{batch_id}.zip", media_type="application/zip")
+    if not archived_paths:
+        raise HTTPException(status_code=404, detail="No completed videos found to package.")
+    return zip_path, resolution_label
+
+
+def parse_manifest_int(value: object, default: int = 0) -> int:
+    with suppress(Exception):
+        return int(value)
+    return default
+
+
+def upload_batch_videos_to_google_drive(batch_id: str, resolution: str = "1080p") -> dict:
+    batch_dir, manifest = load_batch_manifest(batch_id)
+    target_short_side, resolution_label = parse_zip_resolution(resolution)
+    service = build_google_drive_service()
+    root_folder_id = google_drive_root_folder_id(service)
+    batch_folder = get_or_create_drive_batch_folder(service, batch_dir, manifest, root_folder_id)
+
+    uploaded_files = []
+    completed_items = [
+        item
+        for item in manifest.get("items", [])
+        if str(item.get("status") or "").lower() == "completed"
+    ]
+    completed_items.sort(
+        key=lambda item: (
+            parse_manifest_int(item.get("index")),
+            str(item.get("scene_group_id") or ""),
+            parse_manifest_int(item.get("scene_number")),
+        )
+    )
+    for video_index, item in enumerate(completed_items, start=1):
+        file_path = resolve_batch_storage_path(batch_dir, str(item.get("storage_path") or ""))
+        if file_path is None or file_path.suffix.lower() not in VIDEO_FILE_SUFFIXES:
+            continue
+        source_relative_path = file_path.relative_to(batch_dir)
+        upload_target = upscale_video_for_zip(file_path, batch_dir, source_relative_path, target_short_side)
+        upload_name = f"video_sp_{video_index}{upload_target.suffix.lower() or '.mp4'}"
+        uploaded = upload_file_to_google_drive(
+            upload_target,
+            upload_name,
+            "video/mp4",
+            service=service,
+            parent_folder_id=str(batch_folder["id"]),
+        )
+        uploaded_files.append(
+            {
+                "item_index": item.get("index", video_index),
+                "product_name": item.get("product_name", ""),
+                **uploaded,
+            }
+        )
+
+    if not uploaded_files:
+        raise HTTPException(status_code=404, detail="No completed videos found to upload.")
+
+    manifest["drive_upload"] = {
+        "status": "success",
+        "folder_id": batch_folder["id"],
+        "folder_name": batch_folder["name"],
+        "folder_link": batch_folder.get("webViewLink", ""),
+        "resolution": resolution_label,
+        "uploaded_count": len(uploaded_files),
+        "updated_at": now_iso(),
+        "files": uploaded_files,
+    }
+    (batch_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {
+        "status": "success",
+        "batch_id": batch_id,
+        "resolution": resolution_label,
+        "drive_folder_id": batch_folder["id"],
+        "drive_folder_name": batch_folder["name"],
+        "drive_folder_link": batch_folder.get("webViewLink", ""),
+        "uploaded_count": len(uploaded_files),
+        "files": uploaded_files,
+    }
+
+
+def google_drive_root_folder_id(service=None) -> str:
+    configured_folder_id = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", DEFAULT_GOOGLE_DRIVE_FOLDER_ID).strip()
+    if configured_folder_id:
+        return configured_folder_id
+    if service is None:
+        return "root"
+    root_folder = get_or_create_drive_folder(service, DEFAULT_GOOGLE_DRIVE_ROOT_FOLDER_NAME, "root")
+    return str(root_folder["id"])
+
+
+def google_drive_oauth_client_path() -> Path:
+    configured = os.environ.get("GOOGLE_DRIVE_OAUTH_CLIENT_FILE", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    if DEFAULT_GOOGLE_DRIVE_OAUTH_CLIENT_FILE.exists():
+        return DEFAULT_GOOGLE_DRIVE_OAUTH_CLIENT_FILE
+    return FALLBACK_GOOGLE_DRIVE_OAUTH_CLIENT_FILE
+
+
+def google_drive_token_path() -> Path:
+    configured = os.environ.get("GOOGLE_DRIVE_TOKEN_FILE", "").strip()
+    return Path(configured).expanduser() if configured else DEFAULT_GOOGLE_DRIVE_TOKEN_FILE
+
+
+def build_google_drive_service():
+    try:
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+        from google.oauth2 import service_account
+        from google_auth_oauthlib.flow import InstalledAppFlow
+        from googleapiclient.discovery import build
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Google Drive OAuth libraries are not installed. Run: pip install -r requirements.txt. {exc}",
+        )
+
+    auth_mode = os.environ.get("GOOGLE_DRIVE_AUTH_MODE", "oauth").strip().lower()
+    if auth_mode in {"service_account", "service-account", "sa"}:
+        service_account_file = (
+            os.environ.get("GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE")
+            or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+            or DEFAULT_GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE.as_posix()
+        )
+        credentials_path = Path(service_account_file).expanduser()
+        if not credentials_path.exists():
+            raise HTTPException(status_code=500, detail=f"Google Drive credential file not found: {credentials_path}")
+        credentials = service_account.Credentials.from_service_account_file(
+            credentials_path.as_posix(),
+            scopes=GOOGLE_DRIVE_SCOPES,
+        )
+        return build("drive", "v3", credentials=credentials, cache_discovery=False)
+
+    token_path = google_drive_token_path()
+    credentials = None
+    if token_path.exists():
+        credentials = Credentials.from_authorized_user_file(token_path.as_posix(), GOOGLE_DRIVE_SCOPES)
+    if credentials and not credentials.has_scopes(GOOGLE_DRIVE_SCOPES):
+        credentials = None
+    if credentials and credentials.expired and credentials.refresh_token:
+        credentials.refresh(Request())
+    if not credentials or not credentials.valid:
+        client_path = google_drive_oauth_client_path()
+        if not client_path.exists():
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"Google OAuth client file not found: {client_path}. Create an OAuth Desktop client JSON "
+                    "and set GOOGLE_DRIVE_OAUTH_CLIENT_FILE, or save it to this path."
+                ),
+            )
+        flow = InstalledAppFlow.from_client_secrets_file(client_path.as_posix(), GOOGLE_DRIVE_SCOPES)
+        credentials = flow.run_local_server(port=0, open_browser=True)
+    token_path.parent.mkdir(parents=True, exist_ok=True)
+    token_path.write_text(credentials.to_json(), encoding="utf-8")
+    return build("drive", "v3", credentials=credentials, cache_discovery=False)
+
+
+def drive_query_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def get_or_create_drive_folder(service, folder_name: str, parent_folder_id: str = "root") -> dict:
+    parent_filter = "'root' in parents" if not parent_folder_id or parent_folder_id == "root" else f"'{drive_query_escape(parent_folder_id)}' in parents"
+    query = (
+        "mimeType='application/vnd.google-apps.folder' "
+        "and trashed=false "
+        f"and name='{drive_query_escape(folder_name)}' "
+        f"and {parent_filter}"
+    )
+    result = (
+        service.files()
+        .list(
+            q=query,
+            fields="files(id,name,webViewLink)",
+            pageSize=1,
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+        )
+        .execute()
+    )
+    files = result.get("files") or []
+    if files:
+        return files[0]
+
+    metadata: dict[str, object] = {
+        "name": folder_name,
+        "mimeType": "application/vnd.google-apps.folder",
+    }
+    if parent_folder_id and parent_folder_id != "root":
+        metadata["parents"] = [parent_folder_id]
+    return (
+        service.files()
+        .create(
+            body=metadata,
+            fields="id,name,webViewLink",
+            supportsAllDrives=True,
+        )
+        .execute()
+    )
+
+
+def get_or_create_drive_batch_folder(service, batch_dir: Path, manifest: dict, root_folder_id: str) -> dict:
+    existing = manifest.get("drive_upload") or {}
+    existing_folder_id = str(existing.get("folder_id") or "").strip()
+    if existing_folder_id:
+        with suppress(Exception):
+            return (
+                service.files()
+                .get(
+                    fileId=existing_folder_id,
+                    fields="id,name,webViewLink",
+                    supportsAllDrives=True,
+                )
+                .execute()
+            )
+
+    next_name = next_drive_batch_folder_name(service, root_folder_id)
+    metadata: dict[str, object] = {
+        "name": next_name,
+        "mimeType": "application/vnd.google-apps.folder",
+    }
+    if root_folder_id and root_folder_id != "root":
+        metadata["parents"] = [root_folder_id]
+    folder = (
+        service.files()
+        .create(
+            body=metadata,
+            fields="id,name,webViewLink",
+            supportsAllDrives=True,
+        )
+        .execute()
+    )
+    manifest["drive_upload"] = {
+        "status": "folder_created",
+        "folder_id": folder["id"],
+        "folder_name": folder["name"],
+        "folder_link": folder.get("webViewLink", ""),
+        "updated_at": now_iso(),
+    }
+    (batch_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return folder
+
+
+def next_drive_batch_folder_name(service, root_folder_id: str) -> str:
+    parent_filter = "'root' in parents" if not root_folder_id or root_folder_id == "root" else f"'{drive_query_escape(root_folder_id)}' in parents"
+    query = (
+        "mimeType='application/vnd.google-apps.folder' "
+        "and trashed=false "
+        f"and {parent_filter}"
+    )
+    existing_numbers: list[int] = []
+    page_token = None
+    while True:
+        result = (
+            service.files()
+            .list(
+                q=query,
+                fields="nextPageToken,files(id,name)",
+                pageToken=page_token,
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True,
+            )
+            .execute()
+        )
+        for item in result.get("files", []):
+            name = str(item.get("name") or "").strip().lower().replace(" ", "_")
+            if not name.startswith("batch_"):
+                continue
+            suffix = name.removeprefix("batch_")
+            if suffix.isdigit():
+                existing_numbers.append(int(suffix))
+        page_token = result.get("nextPageToken")
+        if not page_token:
+            break
+    return f"batch_{(max(existing_numbers) if existing_numbers else 0) + 1}"
+
+
+def upload_file_to_google_drive(
+    file_path: Path,
+    file_name: str,
+    mime_type: str = "application/octet-stream",
+    *,
+    service=None,
+    parent_folder_id: str | None = None,
+) -> dict:
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Upload file not found.")
+    try:
+        from googleapiclient.errors import HttpError
+        from googleapiclient.http import MediaFileUpload
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Google Drive libraries are not installed. Run: pip install -r requirements.txt. {exc}",
+        )
+
+    service = service or build_google_drive_service()
+    folder_id = parent_folder_id if parent_folder_id is not None else google_drive_root_folder_id(service)
+    metadata: dict[str, object] = {"name": file_name}
+    if folder_id and folder_id != "root":
+        metadata["parents"] = [folder_id]
+    try:
+        media = MediaFileUpload(file_path.as_posix(), mimetype=mime_type, resumable=True)
+        created = (
+            service.files()
+            .create(
+                body=metadata,
+                media_body=media,
+                fields="id,name,webViewLink,webContentLink",
+                supportsAllDrives=True,
+            )
+            .execute()
+        )
+        return {
+            "drive_file_id": created.get("id", ""),
+            "drive_file_name": created.get("name", file_name),
+            "drive_web_view_link": created.get("webViewLink", ""),
+            "drive_web_content_link": created.get("webContentLink", ""),
+        }
+    except HttpError as exc:
+        error_text = ""
+        with suppress(Exception):
+            error_text = exc.content.decode("utf-8", errors="replace")
+        if exc.resp.status == 403 and (
+            "storageQuotaExceeded" in error_text
+            or "Service Accounts do not have storage quota" in error_text
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Google Drive upload failed because service accounts do not have storage quota. "
+                    "Use OAuth personal Drive credentials instead of service account credentials."
+                ),
+            )
+        raise HTTPException(status_code=500, detail=f"Google Drive upload failed: {exc}")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Google Drive upload failed: {exc}")
 
 
 def parse_zip_resolution(resolution: str) -> tuple[int | None, str]:
@@ -973,6 +1441,14 @@ def run_bot_job(record: RunRecord, dataset: UploadedDataset, payload: RunRequest
             subtitle_position=payload.subtitle_position,
             subtitle_font_size=payload.subtitle_font_size,
             subtitle_style=payload.subtitle_style,
+            enable_external_tts=payload.enable_external_tts,
+            tts_provider=payload.tts_provider,
+            tts_voice=payload.tts_voice,
+            tts_rate=payload.tts_rate,
+            tts_pitch=payload.tts_pitch,
+            tts_volume=payload.tts_volume,
+            background_audio_volume=payload.background_audio_volume,
+            voice_audio_volume=payload.voice_audio_volume,
             enable_product_image_cleanup=payload.enable_product_image_cleanup,
             cleanup_mode=payload.cleanup_mode,
             cleanup_background=payload.cleanup_background,

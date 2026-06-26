@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import base64
 import csv
+import asyncio
 import json
+import importlib
 import re
 import shutil
 import socket
 import subprocess
+import sys
+import threading
 import time
 from contextlib import suppress
 from datetime import datetime
@@ -31,6 +35,7 @@ from .models import ProductRow, RunConfig
 from .video_postprocess import (
     burn_subtitles_with_ffmpeg,
     find_ffmpeg_path,
+    find_ffprobe_path,
     generate_srt,
     get_video_duration_seconds,
     overlay_logo_with_ffmpeg,
@@ -846,8 +851,8 @@ class FlowBot:
 
         # ── Step 1 → Step 2 ──────────────────────────────────
         if self.config.auto_next:
-            self.emit_log(f"{tag} Step 1 → Step 2 — Nhấn Next Step...")
-            self.click_next_step(frame)
+            self.emit_log(f"{tag} Step 1 -> Step 2 - Checking whether Next Step is needed...")
+            self.click_next_step_if_needed(frame)
 
         self.handle_scene_settings_mode(frame, product)
 
@@ -874,7 +879,7 @@ class FlowBot:
             self.click_generate(frame)
             self.emit_log(f"{tag} Step 3 — Đang chờ video render xong...")
             result = self.wait_for_video_completed_and_capture(product, index)
-            self.persist_scene_video_result(result)
+            self.persist_scene_video_result(result, frame=frame)
             self.append_video_result_csv(result)
             if result.get("status") == "failed" and not self.config.continue_on_video_failure:
                 raise RuntimeError(result.get("error") or "Video generation failed.")
@@ -912,17 +917,41 @@ class FlowBot:
         self.emit_log("Clicked next step.")
         self.sleep_ms(800)
 
+    def click_next_step_if_needed(self, frame: Frame) -> None:
+        if self.find_brainstorm_button(frame) is not None:
+            self.emit_log("Brainstorm button is already visible; skipping next-step.", "INFO")
+            return
+        try:
+            self.click_next_step(frame)
+        except RuntimeError:
+            if self.find_brainstorm_button(frame) is not None:
+                self.emit_log("No next-step found, but brainstorm is ready; continuing.", "INFO")
+                return
+            raise
+
     def handle_scene_settings_mode(self, frame: Frame, product: ProductRow) -> None:
         mode = self.config.scene_mode
         if mode == "skip":
             self.emit_log("Scene mode: skip.", "INFO")
             return
         if mode == "manual_pause":
+            if not self.has_scene_settings_fields(frame):
+                self.emit_log(
+                    "Scene mode: manual pause requested, but this tool has no Scene Settings fields. Skipping pause.",
+                    "INFO",
+                )
+                return
             self.wait_for_manual_scene_continue()
             return
         if mode == "auto_excel":
             if not self.config.scene_field_keys:
                 self.emit_log("No scene columns found. Skipping scene settings.", "WARNING")
+                return
+            if not self.has_scene_settings_fields(frame):
+                self.emit_log(
+                    "Excel has scene columns, but this tool has no Scene Settings fields. Skipping scene fill.",
+                    "INFO",
+                )
                 return
             self.emit_log(
                 "Scene mode: auto_excel. Filling scene settings from Excel columns.",
@@ -931,6 +960,23 @@ class FlowBot:
             self.fill_scene_metadata_if_available(frame, product)
             return
         self.emit_log(f"Unknown scene mode '{mode}'. Skipping scene settings.", "WARNING")
+
+    def has_scene_settings_fields(self, frame: Frame) -> bool:
+        selectors = [
+            '[data-flow-field="scene-group-id"]',
+            '[data-flow-field="scene-number"]',
+            '[data-flow-field="scene-total"]',
+            '[data-flow-field="scene-role"]',
+            '[data-flow-field="scene-continuity-notes"]',
+        ]
+        for selector in selectors:
+            if self.find_in_all_frames(selector, require_visible=False) is not None:
+                return True
+            with suppress(Exception):
+                locator = frame.locator(selector).first
+                if locator.count():
+                    return True
+        return False
 
     def wait_for_manual_scene_continue(self) -> None:
         timeout_ms = max(self.config.manual_scene_pause_timeout_ms, 1)
@@ -1031,6 +1077,31 @@ class FlowBot:
         if errors:
             self.emit_log(f"Video model select errors: {' | '.join(errors[:2])}", "WARNING")
 
+    def find_brainstorm_button(self, frame: Frame) -> Optional[Locator]:
+        selectors = [
+            '[data-flow-action="brainstorm-idea"]',
+            '[data-flow-field="brainstorm-idea"]',
+        ]
+        patterns = [
+            r"brainstorm",
+            r"ý tưởng",
+            r"y tuong",
+            r"tạo ý tưởng",
+            r"tao y tuong",
+            r"lập kịch bản",
+            r"lap kich ban",
+        ]
+        button = self.find_button_by_selectors_or_text(frame, selectors=selectors, patterns=patterns)
+        if button is not None:
+            return button
+        for scope in self.iter_page_and_frame_scopes():
+            if scope == frame:
+                continue
+            button = self.find_button_by_selectors_or_text(scope, selectors=selectors, patterns=patterns)
+            if button is not None:
+                return button
+        return None
+
     def click_brainstorm_idea(self, frame: Frame) -> None:
         """Click the 'Brainstorm Ý Tưởng' button on Step 2."""
         self.emit_log("Looking for brainstorm idea button...")
@@ -1039,20 +1110,9 @@ class FlowBot:
         deadline = time.time() + 30
         btn: Optional[Locator] = None
         while time.time() < deadline:
-            btn = self.find_button_by_selectors_or_text(
-                frame,
-                selectors=[
-                    '[data-flow-action="brainstorm-idea"]',
-                    '[data-flow-field="brainstorm-idea"]',
-                ],
-                patterns=[
-                    r"brainstorm",
-                    r"ý tưởng",
-                    r"y tuong",
-                    r"tạo ý tưởng",
-                    r"tao y tuong",
-                ],
-            )
+            self.ensure_browser_alive()
+            frame = self.refresh_frame_reference(frame)
+            btn = self.find_brainstorm_button(frame)
             if btn is not None:
                 break
             self.sleep_ms(800)
@@ -1090,6 +1150,9 @@ class FlowBot:
             generate_ready = self.read_flow_output_text("generate-video-ready").strip().lower()
             if brainstorm_status in {"failed", "error"} or "failed" in brainstorm_status:
                 raise RuntimeError("Brainstorm failed before video generation became ready.")
+            flow_error = self.read_visible_flow_error(frame)
+            if flow_error:
+                raise RuntimeError(f"Flow Builder reported an error before generate-video became ready: {flow_error}")
             btn = self.find_generate_button(frame)
             output_ready = generate_ready in {"true", "1", "yes", "ready", "completed"}
             brainstorm_done = (
@@ -1116,6 +1179,41 @@ class FlowBot:
             "Screenshot saved to generate-video-not-found.png"
         )
 
+    def read_visible_flow_error(self, frame: Frame) -> str:
+        selectors = [
+            '[data-flow-error]',
+            '[data-flow-status="error"]',
+            '[data-flow-alert="error"]',
+            '[data-flow-message="error"]',
+            '[role="alert"]',
+            '[aria-live="assertive"]',
+        ]
+        script = """
+            (selectors) => {
+              for (const selector of selectors) {
+                for (const el of Array.from(document.querySelectorAll(selector)).slice(0, 8)) {
+                  const style = window.getComputedStyle(el);
+                  const rect = el.getBoundingClientRect();
+                  const visible = style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+                  if (!visible) continue;
+                  const text = (el.getAttribute("data-flow-error") || el.textContent || "").trim().replace(/\\s+/g, " ");
+                  if (text) return text.slice(0, 500);
+                }
+              }
+              return "";
+            }
+        """
+        scopes: list[Page | Frame] = []
+        if frame is not None:
+            scopes.append(frame)
+        scopes.extend(self.iter_page_and_frame_scopes())
+        for scope in scopes:
+            with suppress(Exception):
+                message = str(scope.evaluate(script, selectors) or "").strip()
+                if message:
+                    return message
+        return ""
+
     # ════════════════════════════════════════════════════════
     # GENERATE VIDEO
     # ════════════════════════════════════════════════════════
@@ -1134,6 +1232,8 @@ class FlowBot:
                 r"dung video",
                 r"tạo video",
                 r"tao video",
+                r"sản xuất video",
+                r"san xuat video",
                 r"create video",
                 r"\bgenerate\b",
             ],
@@ -1150,11 +1250,15 @@ class FlowBot:
                     '[data-flow-field="generate-video"]',
                 ],
                 patterns=[
-                    r"generate video",
-                    r"dá»±ng video",
+                r"generate video",
+                r"render clip",
+                r"render video",
+                r"dá»±ng video",
                     r"dung video",
                     r"táº¡o video",
                     r"tao video",
+                    r"sản xuất video",
+                    r"san xuat video",
                     r"create video",
                     r"\bgenerate\b",
                 ],
@@ -1173,14 +1277,29 @@ class FlowBot:
         self.emit_log("Clicked generate video.", "SUCCESS")
 
     def configure_multi_clip_flow_settings(self, frame: Frame) -> None:
-        settings = {
-            "video-model": self.config.video_model,
-            "aspect-ratio": self.config.aspect_ratio,
-            "multi-clip-mode": self.config.multi_clip_mode,
-            "scene-builder-mode": self.config.scene_builder_mode,
-            "target-final-duration": str(self.config.target_final_duration),
-        }
-        for field_name, value in settings.items():
+        core_settings = [
+            ("video-model", self.config.video_model),
+            ("aspect-ratio", self.config.aspect_ratio),
+        ]
+        optional_settings = [
+            ("multi-clip-mode", self.config.multi_clip_mode),
+            ("scene-builder-mode", self.config.scene_builder_mode),
+            ("target-final-duration", self.normalize_target_final_duration(self.config.target_final_duration)),
+        ]
+        for field_name, value in core_settings:
+            if self.select_flow_field_value(frame, field_name, value):
+                self.emit_log(f"Selected Flow {field_name}: {value}", "INFO")
+            else:
+                self.emit_log(f"Flow selector not found for {field_name}; continuing.", "WARNING")
+
+        if self.find_brainstorm_button(frame) is not None:
+            self.emit_log("Brainstorm button is ready after core settings; skipping optional setting selectors.", "INFO")
+            return
+
+        for field_name, value in optional_settings:
+            if self.find_brainstorm_button(frame) is not None:
+                self.emit_log("Brainstorm button became ready; continuing to script generation.", "INFO")
+                return
             if self.select_flow_field_value(frame, field_name, value):
                 self.emit_log(f"Selected Flow {field_name}: {value}", "INFO")
             else:
@@ -1211,7 +1330,7 @@ class FlowBot:
         option_tokens = self.flow_option_tokens(field_name, value)
         for option in ({"value": value}, {"label": value}):
             with suppress(Exception):
-                locator.select_option(**option)
+                locator.select_option(**option, timeout=1_500)
                 locator.dispatch_event("input")
                 locator.dispatch_event("change")
                 return True
@@ -1222,6 +1341,7 @@ class FlowBot:
                     const option = Array.from(select.options || []).find((item) =>
                         item.value === targetValue
                         || item.textContent.trim() === targetValue
+                        || optionTokens.includes(item.value || "")
                         || optionTokens.includes(item.getAttribute("data-flow-option") || "")
                     );
                     if (!option) return false;
@@ -1242,6 +1362,10 @@ class FlowBot:
                     option_locator.click()
                     return True
         return False
+
+    def normalize_target_final_duration(self, value: int | str) -> str:
+        text = str(value or "").strip()
+        return text if text.endswith("s") else f"{text}s"
 
     def flow_option_tokens(self, field_name: str, value: str) -> list[str]:
         normalized = str(value or "").strip().lower()
@@ -1292,16 +1416,27 @@ class FlowBot:
             plan = self.build_fallback_clip_plan(product, self.config.video_model, self.config.target_final_duration)
         plan = self.normalize_clip_plan_for_mode(plan, product)
         self.emit_log(f"Clip plan loaded: {len(plan)} clips.", "SUCCESS")
+        native_scene_controls_seen = False
+        if self.config.scene_builder_mode == "native_flow" and not self.has_native_scene_builder_controls():
+            self.emit_log(
+                "Native Scene Builder controls are not present yet; bot will use local merge unless they appear after render.",
+                "INFO",
+            )
 
         scene_group_id = self.multi_clip_scene_group_id(product, index)
         batch_dir = self.batch_storage_dir()
         clips_dir = batch_dir / "clips" / scene_group_id
+        voice_dir = batch_dir / "voice" / scene_group_id
+        subtitle_dir = batch_dir / "subtitles" / scene_group_id
         final_dir = batch_dir / "final"
         clips_dir.mkdir(parents=True, exist_ok=True)
+        voice_dir.mkdir(parents=True, exist_ok=True)
+        subtitle_dir.mkdir(parents=True, exist_ok=True)
         final_dir.mkdir(parents=True, exist_ok=True)
 
         clip_results: list[dict] = []
         clip_paths: list[Path] = []
+        clip_subtitle_segments: list[tuple[int, float, list[dict]]] = []
         last_frame_path: Path | None = None
         scene_id = ""
         scene_clip_list = ""
@@ -1314,13 +1449,15 @@ class FlowBot:
             clip_role = self.slugify(str(clip.get("clip_role") or clip.get("role") or f"clip_{clip_index}")) or f"clip_{clip_index}"
             self.emit_log(f"Generating clip {clip_index}/{len(plan)}: {clip_role}", "INFO")
             if clip_index > 1 and last_frame_path is not None:
-                if self.upload_start_frame(frame, last_frame_path):
+                if self.has_start_frame_upload_input() and self.upload_start_frame(frame, last_frame_path):
                     self.emit_log(f"Uploaded start frame for clip {clip_index}.", "SUCCESS")
-                else:
+                elif self.has_start_frame_upload_input():
                     self.emit_log(
                         f"Could not upload start frame for clip {clip_index}; continuing with product image reference.",
                         "WARNING",
                     )
+                else:
+                    self.emit_log("Start-frame input not present; using tool-native next-clip continuity.", "INFO")
 
             max_attempts = max(1, int(self.config.max_generate_retries) + 1)
             for attempt in range(1, max_attempts + 1):
@@ -1350,7 +1487,7 @@ class FlowBot:
                     if str(result.get("status") or "").lower() != "completed":
                         raise RuntimeError(result.get("error") or f"Clip {clip_index} failed.")
 
-                    clip_path = clips_dir / f"clip_{clip_index:02d}_{clip_role}.mp4"
+                    clip_path = clips_dir / f"clip_{clip_index:02d}_raw.mp4"
                     video_bytes = self.resolve_video_bytes(result)
                     if video_bytes is not None:
                         clip_path.write_bytes(video_bytes)
@@ -1363,8 +1500,39 @@ class FlowBot:
                     result["storage_path"] = clip_path.relative_to(self.config.output_dir).as_posix()
                     self.emit_log(f"Saved clip {clip_index}.", "SUCCESS")
 
+                    audio_result = self.process_clip_external_tts(
+                        frame=frame,
+                        result=result,
+                        clip_index=clip_index,
+                        clip_path=clip_path,
+                        voiced_path=clips_dir / f"clip_{clip_index:02d}_voiced.mp4",
+                        voice_path=voice_dir / f"clip_{clip_index:02d}_voice.mp3",
+                        voice_json_path=voice_dir / f"clip_{clip_index:02d}_voice.json",
+                        subtitle_path=subtitle_dir / f"clip_{clip_index:02d}.srt",
+                        batch_dir=batch_dir,
+                    )
+                    result.update(audio_result)
+                    effective_clip_path = (
+                        clips_dir / Path(str(audio_result.get("voiced_clip_file") or "")).name
+                        if audio_result.get("tts_status") == "success" and audio_result.get("voiced_clip_file")
+                        else clip_path
+                    )
+                    if audio_result.get("voiceover_json"):
+                        clip_duration = self.safe_media_duration_seconds(clip_path)
+                        clip_subtitle_segments.append(
+                            (
+                                clip_index,
+                                clip_duration,
+                                audio_result.get("voiceover_json") or [],
+                            )
+                        )
+
                     last_frame_path = clips_dir / f"last_frame_{clip_index:02d}.png"
-                    if not self.capture_last_frame_from_flow(frame, clip_index, last_frame_path):
+                    if not self.has_start_frame_upload_input():
+                        if not self.extract_last_frame_ffmpeg(clip_path, last_frame_path):
+                            self.emit_log(f"Could not extract last frame for clip {clip_index}.", "WARNING")
+                            last_frame_path = None
+                    elif not self.capture_last_frame_from_flow(frame, clip_index, last_frame_path):
                         if not self.extract_last_frame_ffmpeg(clip_path, last_frame_path):
                             self.emit_log(f"Could not capture last frame for clip {clip_index}.", "WARNING")
                             last_frame_path = None
@@ -1372,7 +1540,11 @@ class FlowBot:
                         result["last_frame_file"] = last_frame_path.relative_to(batch_dir).as_posix()
                         self.emit_log(f"Captured last frame for clip {clip_index}.", "SUCCESS")
 
-                    if self.config.scene_builder_mode == "native_flow":
+                    if (
+                        self.config.scene_builder_mode == "native_flow"
+                        and self.has_native_scene_builder_controls()
+                    ):
+                        native_scene_controls_seen = True
                         if self.add_clip_to_native_scene(frame):
                             self.emit_log("Added clip to native Flow scene.", "SUCCESS")
                         scene_id = self.read_flow_output_text("scene-id") or scene_id
@@ -1381,7 +1553,7 @@ class FlowBot:
                     previous_video_url = str(result.get("video_url") or "")
                     previous_video_download_data = str(result.get("video_download_data") or "")
                     clip_results.append(result)
-                    clip_paths.append(clip_path)
+                    clip_paths.append(effective_clip_path)
                     break
                 except Exception as exc:
                     if attempt < max_attempts:
@@ -1402,7 +1574,10 @@ class FlowBot:
         final_path = final_dir / f"{scene_group_id}_final.mp4"
 
         if status == "completed":
-            if self.config.scene_builder_mode == "native_flow":
+            if (
+                self.config.scene_builder_mode == "native_flow"
+                and (native_scene_controls_seen or self.has_native_scene_builder_controls())
+            ):
                 native_target = final_dir / f"{scene_group_id}_native.mp4"
                 self.wait_for_scene_finished(timeout_ms=60_000)
                 if self.try_download_native_scene(frame, native_target):
@@ -1421,6 +1596,9 @@ class FlowBot:
                     error = "FFmpeg merge failed."
 
             if status == "completed":
+                final_subtitle_path = batch_dir / "subtitles" / scene_group_id / "final.srt"
+                if clip_subtitle_segments and self.combine_clip_subtitles(clip_subtitle_segments, final_subtitle_path):
+                    self.emit_log(f"Combined final subtitles: {final_subtitle_path.name}", "SUCCESS")
                 base_row = self.multi_clip_base_row(
                     product,
                     index,
@@ -1432,7 +1610,15 @@ class FlowBot:
                     scene_id,
                     merge_method,
                 )
+                if final_subtitle_path.exists():
+                    base_row["subtitles_srt"] = final_subtitle_path.read_text(encoding="utf-8")
+                    base_row["final_subtitle_file"] = final_subtitle_path.relative_to(batch_dir).as_posix()
+                base_row["audio_pipeline"] = "external-tts" if self.config.enable_external_tts else "raw"
+                base_row["tts_provider"] = self.config.tts_provider
                 postprocess_result = self.create_final_video_with_postprocessing(raw_final_path, final_path, base_row)
+                postprocess_result.setdefault("final_subtitle_file", base_row.get("final_subtitle_file", ""))
+                postprocess_result.setdefault("audio_pipeline", base_row.get("audio_pipeline", ""))
+                postprocess_result.setdefault("tts_provider", base_row.get("tts_provider", ""))
                 base_row.update(postprocess_result)
                 final_video_file = final_path.relative_to(batch_dir).as_posix() if final_path.exists() else raw_final_path.relative_to(batch_dir).as_posix()
                 for result in clip_results:
@@ -1482,42 +1668,107 @@ class FlowBot:
         raise RuntimeError(error or "Multi-clip product failed.")
 
     def click_generate_for_clip(self, frame: Frame, clip_index: int) -> None:
-        selectors = (
-            [
-                '[data-flow-action="generate-next-scene-clip"]',
-                '[data-flow-action="generate-next-clip"]',
-                '[data-flow-field="generate-next-clip"]',
-                '[data-flow-action="generate-video"]',
-                '[data-flow-field="generate-video"]',
-            ]
-            if clip_index > 1
-            else [
-                '[data-flow-action="generate-video"]',
-                '[data-flow-field="generate-video"]',
-                '[data-flow-action="generate-next-scene-clip"]',
-                '[data-flow-action="generate-next-clip"]',
-                '[data-flow-field="generate-next-clip"]',
-            ]
-        )
-        btn = self.find_button_by_selectors_or_text(
+        if clip_index > 1:
+            self.advance_to_next_clip_if_needed(frame, clip_index)
+
+        selectors = [
+            '[data-flow-action="generate-video"]',
+            '[data-flow-field="generate-video"]',
+        ]
+        btn = self.find_button_in_all_scopes(
             frame,
             selectors=selectors,
-            patterns=[r"generate next", r"next clip", r"generate video", r"tao video", r"\bgenerate\b"],
+            patterns=[r"generate video", r"tao video", r"sản xuất video", r"san xuat video", r"\bgenerate\b"],
         )
-        if btn is None:
-            for scope in self.iter_page_and_frame_scopes():
-                btn = self.find_button_by_selectors_or_text(
-                    scope,
-                    selectors=selectors,
-                    patterns=[r"generate next", r"next clip", r"generate video", r"tao video", r"\bgenerate\b"],
-                )
-                if btn is not None:
-                    break
         if btn is None:
             self.capture_debug(f"generate-clip-{clip_index:02d}-not-found")
             raise RuntimeError(f"Generate button not found for clip {clip_index}.")
         btn.click()
         self.emit_log(f"Generating clip {clip_index}...", "INFO")
+
+    def advance_to_next_clip_if_needed(self, frame: Frame, clip_index: int) -> None:
+        current = self.parse_scene_int(self.read_flow_output_text("current-clip-index"), 1)
+        if current >= clip_index and self.find_generate_button(frame) is not None:
+            return
+
+        btn = self.find_button_in_all_scopes(
+            frame,
+            selectors=[
+                '[data-flow-action="next-clip"]',
+                '[data-flow-field="next-clip"]',
+                '[data-flow-action="generate-next-clip"]',
+                '[data-flow-field="generate-next-clip"]',
+                '[data-flow-action="generate-next-scene-clip"]',
+            ],
+            patterns=[r"generate next", r"next clip", r"tiếp sang", r"tiep sang", r"cảnh"],
+        )
+        if btn is None:
+            btn = self.find_next_clip_button_fallback(frame, clip_index)
+        if btn is None:
+            self.capture_debug(f"next-clip-{clip_index:02d}-not-found")
+            raise RuntimeError(f"Next clip button not found before clip {clip_index}.")
+
+        btn.click()
+        self.emit_log(f"Advanced tool to clip {clip_index}.", "INFO")
+        deadline = time.time() + 45
+        while time.time() < deadline:
+            self.ensure_browser_alive()
+            current = self.parse_scene_int(self.read_flow_output_text("current-clip-index"), current)
+            ready = self.read_flow_output_text("generate-video-ready").strip().lower()
+            if current >= clip_index and (ready in {"true", "1", "yes", "ready"} or self.find_generate_button(frame) is not None):
+                return
+            self.sleep_ms(500)
+        self.capture_debug(f"next-clip-{clip_index:02d}-not-ready")
+        raise TimeoutError(f"Clip {clip_index} did not become ready after clicking next clip.")
+
+    def find_next_clip_button_fallback(self, frame: Frame, clip_index: int) -> Optional[Locator]:
+        selectors = [
+            '[data-flow-action="next-clip"]',
+            '[data-flow-field="next-clip"]',
+            '[data-flow-action="generate-next-clip"]',
+            '[data-flow-field="generate-next-clip"]',
+            '[data-flow-action="next-day"]',
+            '[data-flow-field="next-day"]',
+            'button[data-flow-action*="next"]',
+            'button[data-flow-field*="next"]',
+        ]
+        patterns = [
+            r"ti.p\s+sang",
+            r"tiep\s+sang",
+            r"c.nh\s*" + str(clip_index),
+            r"canh\s*" + str(clip_index),
+            r"arrow_forward",
+        ]
+        for scope in self.iter_page_and_frame_scopes():
+            for selector in selectors:
+                with suppress(Exception):
+                    locator = scope.locator(selector).first
+                    if locator.count() and locator.is_visible() and not locator.is_disabled():
+                        return locator
+            button = self.find_button(scope, patterns)
+            if button is not None:
+                return button
+        button = self.find_button(frame, patterns)
+        if button is not None:
+            return button
+        return None
+
+    def find_button_in_all_scopes(
+        self,
+        frame: Frame,
+        selectors: list[str],
+        patterns: list[str],
+    ) -> Optional[Locator]:
+        button = self.find_button_by_selectors_or_text(frame, selectors=selectors, patterns=patterns)
+        if button is not None:
+            return button
+        for scope in self.iter_page_and_frame_scopes():
+            if scope == frame:
+                continue
+            button = self.find_button_by_selectors_or_text(scope, selectors=selectors, patterns=patterns)
+            if button is not None:
+                return button
+        return None
 
     def read_clip_plan(self, frame: Frame) -> list[dict]:
         raw = self.read_flow_output_text_from_scope(frame, "clip-plan-json") or self.read_flow_output_text("clip-plan-json")
@@ -1595,6 +1846,13 @@ class FlowBot:
                     self.sleep_ms(800)
                 return True
         return False
+
+    def has_start_frame_upload_input(self) -> bool:
+        selectors = [
+            'input[data-flow-field="start-frame-upload-input"]',
+            '[data-flow-field="start-frame-upload-input"] input[type="file"]',
+        ]
+        return any(self.find_in_all_frames(selector, require_visible=False) is not None for selector in selectors)
 
     def capture_last_frame_from_flow(self, frame: Frame, clip_index: int, output_path: Path) -> bool:
         if self.write_data_url_to_file(self.read_flow_output_text("last-frame-image-data"), output_path):
@@ -1766,6 +2024,672 @@ class FlowBot:
             self.emit_log(f"Video download button fallback failed: {exc}", "WARNING")
             return False
 
+    def process_clip_external_tts(
+        self,
+        frame: Frame,
+        result: dict,
+        clip_index: int,
+        clip_path: Path,
+        voiced_path: Path,
+        voice_path: Path,
+        voice_json_path: Path,
+        subtitle_path: Path,
+        batch_dir: Path,
+    ) -> dict:
+        audio_result = {
+            "audio_pipeline": "external-tts" if self.config.enable_external_tts else "disabled",
+            "tts_provider": self.config.tts_provider,
+            "tts_enabled": bool(self.config.enable_external_tts),
+            "tts_status": "disabled" if not self.config.enable_external_tts else "pending",
+            "tts_error": "",
+            "tts_audio_file": "",
+            "voiced_clip_file": "",
+            "voiced_video_file": "",
+            "voiceover_text": str(result.get("voiceover_text") or result.get("voiceover") or "").strip(),
+            "voiceover": str(result.get("voiceover_text") or result.get("voiceover") or "").strip(),
+            "voiceover_json": [],
+            "voiceover_json_file": "",
+            "voiceover_language": self.read_flow_output_text("voiceover-language"),
+            "voiceover_mode": self.read_flow_output_text("voiceover-mode"),
+            "voiceover_status": self.read_flow_output_text("voiceover-status"),
+            "tts_required": self.read_flow_output_text("tts-required"),
+            "subtitle_file": "",
+        }
+
+        self.emit_log(f"Reading voiceover for clip {clip_index}...", "INFO")
+        segments, source = self.wait_for_voiceover_segments_for_clip(clip_index, clip_path, result)
+        if not segments:
+            self.emit_log(f"No voiceover found for clip {clip_index}.", "WARNING")
+            audio_result["tts_status"] = "missing" if self.config.enable_external_tts else "disabled"
+            audio_result["tts_error"] = "voiceover output missing after polling and fallback"
+            return audio_result
+
+        self.emit_log(f"Voiceover source: {source}", "INFO")
+        voiceover_text = " ".join(
+            str(item.get("text") or "").strip() for item in segments if str(item.get("text") or "").strip()
+        ).strip()
+        audio_result["voiceover_text"] = voiceover_text
+        audio_result["voiceover"] = voiceover_text
+        audio_result["voiceover_json"] = segments
+
+        voice_json_path.parent.mkdir(parents=True, exist_ok=True)
+        voice_json_path.write_text(json.dumps(segments, ensure_ascii=False, indent=2), encoding="utf-8")
+        audio_result["voiceover_json_file"] = voice_json_path.relative_to(batch_dir).as_posix()
+
+        if self.write_segments_as_srt(segments, subtitle_path):
+            audio_result["subtitle_file"] = subtitle_path.relative_to(batch_dir).as_posix()
+
+        if not self.config.enable_external_tts or self.config.tts_provider == "none":
+            audio_result["tts_status"] = "disabled"
+            return audio_result
+
+        if not voiceover_text:
+            audio_result["tts_status"] = "missing"
+            return audio_result
+
+        try:
+            self.emit_log("Generating Vietnamese TTS...", "INFO")
+            if not self.run_generate_tts_audio(voiceover_text, voice_path):
+                self.emit_log("TTS failed; using raw clip.", "WARNING")
+                audio_result["tts_status"] = "failed"
+                audio_result["tts_error"] = f"TTS audio was not created: {voice_path}"
+                return audio_result
+
+            audio_result["tts_audio_file"] = voice_path.relative_to(batch_dir).as_posix()
+
+            video_duration = self.safe_media_duration_seconds(clip_path)
+            audio_duration = self.safe_media_duration_seconds(voice_path)
+            mix_voice_path = voice_path
+            if video_duration and audio_duration and audio_duration > max(0.2, video_duration - 0.2):
+                trimmed = voice_path.with_name(f"{voice_path.stem}_trimmed{voice_path.suffix}")
+                if self.trim_audio_to_duration(voice_path, trimmed, max(0.2, video_duration - 0.2)):
+                    mix_voice_path = trimmed
+                    self.emit_log("Voiceover longer than clip duration; trimmed.", "WARNING")
+
+            self.emit_log("Mixing voiceover into clip...", "INFO")
+            if self.mix_voiceover_with_video(
+                clip_path,
+                mix_voice_path,
+                voiced_path,
+                background_volume=self.config.background_audio_volume,
+                voice_volume=self.config.voice_audio_volume * self.config.tts_volume,
+            ):
+                if not self.validate_audio_stream_ffprobe(voiced_path):
+                    audio_result["tts_status"] = "failed"
+                    audio_result["tts_error"] = f"Voiced clip has no audio stream: {voiced_path}"
+                    self.emit_log(audio_result["tts_error"], "WARNING")
+                    return audio_result
+                audio_result["tts_status"] = "success"
+                audio_result["voiced_clip_file"] = voiced_path.relative_to(batch_dir).as_posix()
+                audio_result["voiced_video_file"] = audio_result["voiced_clip_file"]
+                audio_result["clip_video_file"] = audio_result["voiced_clip_file"]
+                audio_result["video_file"] = audio_result["voiced_clip_file"]
+                self.emit_log(f"Voiced clip saved: {voiced_path}", "SUCCESS")
+                return audio_result
+
+            self.emit_log("Voiceover mix failed; using raw clip.", "WARNING")
+            audio_result["tts_status"] = "failed"
+            audio_result["tts_error"] = f"FFmpeg voiceover mix failed: {voiced_path}"
+        except Exception as exc:
+            audio_result["tts_status"] = "failed"
+            audio_result["tts_error"] = str(exc)
+            self.emit_log(f"TTS pipeline failed; using raw clip: {exc}", "WARNING")
+        return audio_result
+
+    def wait_for_voiceover_segments_for_clip(
+        self,
+        clip_index: int,
+        clip_path: Path,
+        result: dict,
+        timeout_ms: int = 20_000,
+        interval_ms: int = 500,
+    ) -> tuple[list[dict], str]:
+        deadline = time.time() + timeout_ms / 1000
+        attempt = 0
+        while time.time() < deadline:
+            attempt += 1
+            segments, source = self.read_voiceover_segments_for_clip(clip_index, clip_path, log_lengths=True)
+            if segments:
+                return segments, source
+            self.sleep_ms(interval_ms)
+
+        segments, source = self.read_voiceover_segments_for_clip(clip_index, clip_path, log_lengths=True)
+        if segments:
+            return segments, source
+
+        fallback_text = str(result.get("voiceover_text") or result.get("voiceover") or "").strip()
+        if fallback_text:
+            clip_duration = self.safe_media_duration_seconds(clip_path)
+            end = max(0.5, (clip_duration or 3.0) - 0.3)
+            self.emit_log(f"Using captured result voiceover fallback for clip {clip_index}.", "WARNING")
+            return [{"start": 0.0, "end": end, "text": fallback_text}], "result.voiceover_text"
+
+        return [], ""
+
+    def read_voiceover_segments_for_clip(
+        self,
+        clip_index: int,
+        clip_path: Path,
+        log_lengths: bool = False,
+    ) -> tuple[list[dict], str]:
+        duration = self.safe_media_duration_seconds(clip_path)
+        selectors = self.voiceover_output_selectors()
+        for output_name, expects_json in selectors:
+            raw = self.read_voiceover_output_text(output_name).strip()
+            if log_lengths:
+                self.emit_log(f"voiceover selector {output_name} length={len(raw)}", "INFO")
+            if not raw:
+                continue
+            selector_clip = self.voiceover_selector_clip_index(output_name)
+            if selector_clip and selector_clip != clip_index:
+                continue
+            segments = self.parse_voiceover_segments(
+                raw,
+                duration,
+                expects_json=expects_json,
+                clip_index=clip_index,
+                source_name=output_name,
+            )
+            if segments:
+                return segments, output_name
+        return [], ""
+
+    def voiceover_selector_clip_index(self, output_name: str) -> int:
+        match = re.match(r"clip-(\d+)-voiceover", str(output_name or ""))
+        if not match:
+            return 0
+        with suppress(ValueError):
+            return int(match.group(1))
+        return 0
+
+    def voiceover_output_selectors(self) -> list[tuple[str, bool]]:
+        return [
+            ("clip-1-voiceover-json", True),
+            ("clip-2-voiceover-json", True),
+            ("clip-3-voiceover-json", True),
+            ("current-clip-voiceover-json", True),
+            ("voiceover-json", True),
+            ("clip-1-voiceover", False),
+            ("clip-2-voiceover", False),
+            ("clip-3-voiceover", False),
+            ("current-clip-voiceover", False),
+            ("voiceover-script", False),
+            ("voiceover", False),
+        ]
+
+    def read_voiceover_output_text(self, output_name: str) -> str:
+        values = self.read_flow_output_values(output_name)
+        for value in values:
+            if value.strip():
+                return value.strip()
+        return ""
+
+    def read_flow_output_values(self, output_name: str) -> list[str]:
+        selectors = [
+            f'[data-flow-output="{output_name}"]',
+            f'[data-flow-field="{output_name}"]',
+            f'input[data-flow-output="{output_name}"]',
+            f'textarea[data-flow-output="{output_name}"]',
+            f'input[data-flow-field="{output_name}"]',
+            f'textarea[data-flow-field="{output_name}"]',
+            f'#{output_name}',
+        ]
+        values: list[str] = []
+        seen: set[str] = set()
+        for scope in self.iter_page_and_frame_scopes():
+            for selector in selectors:
+                with suppress(Exception):
+                    locator_group = scope.locator(selector)
+                    count = min(locator_group.count(), 10)
+                    for index in range(count):
+                        locator = locator_group.nth(index)
+                        for reader in (
+                            lambda item: item.input_value(),
+                            lambda item: item.get_attribute("value") or "",
+                            lambda item: item.text_content() or "",
+                            lambda item: item.inner_text(),
+                        ):
+                            with suppress(Exception):
+                                value = str(reader(locator) or "").strip()
+                                if value and value not in seen:
+                                    seen.add(value)
+                                    values.append(value)
+        return values
+
+    def parse_voiceover_segments(
+        self,
+        raw: str,
+        clip_duration: float,
+        expects_json: bool = False,
+        clip_index: int = 1,
+        source_name: str = "",
+    ) -> list[dict]:
+        candidates = [raw]
+        match = re.search(r"(\{.*\}|\[.*\])", raw, flags=re.DOTALL)
+        if match:
+            candidates.insert(0, match.group(1))
+        if expects_json or match:
+            for candidate in candidates:
+                with suppress(Exception):
+                    parsed = json.loads(candidate)
+                    items = self.voiceover_items_from_parsed(parsed, clip_index, source_name)
+                    if isinstance(items, dict):
+                        items = [items]
+                    if not isinstance(items, list):
+                        continue
+                    segments = self.normalize_voiceover_segments(items, clip_duration)
+                    if segments:
+                        return segments
+        text = re.sub(r"\s+", " ", raw).strip()
+        if not text or text.startswith("[") or text.startswith("{"):
+            return []
+        end = max(0.5, (clip_duration or 3.0) - 0.3)
+        return [{"start": 0.0, "end": end, "text": text}]
+
+    def voiceover_items_from_parsed(self, parsed: object, clip_index: int, source_name: str = "") -> object:
+        if isinstance(parsed, dict):
+            if any(key in parsed for key in ("start", "end", "text", "voiceover", "caption")):
+                return [parsed]
+            for collection_key in ("clips", "items", "scenes"):
+                collection = parsed.get(collection_key)
+                selected = self.voiceover_items_for_clip_from_collection(collection, clip_index)
+                if selected:
+                    return selected
+            for direct_key in (
+                f"clip-{clip_index}",
+                f"clip_{clip_index}",
+                f"clip{clip_index}",
+                str(clip_index),
+            ):
+                selected = self.voiceover_items_from_parsed(parsed.get(direct_key), clip_index, source_name)
+                if selected:
+                    return selected
+            for direct_collection_key in ("segments", "voiceover", "subtitles"):
+                direct_collection = parsed.get(direct_collection_key)
+                selected = self.voiceover_items_for_clip_from_collection(direct_collection, clip_index)
+                if selected:
+                    return selected
+            return parsed.get("segments") or parsed.get("voiceover") or parsed.get("subtitles")
+        if isinstance(parsed, list):
+            if source_name == "voiceover-json":
+                selected = self.voiceover_items_for_clip_from_collection(parsed, clip_index)
+                if selected:
+                    return selected
+            return parsed
+        return parsed
+
+    def voiceover_items_for_clip_from_collection(self, collection: object, clip_index: int) -> object:
+        if not isinstance(collection, list):
+            return []
+        matches: list[object] = []
+        for item in collection:
+            if not isinstance(item, dict):
+                continue
+            item_clip_index = self.parse_scene_int(
+                item.get("clip_index")
+                or item.get("clipIndex")
+                or item.get("scene_number")
+                or item.get("sceneNumber")
+                or item.get("index"),
+                0,
+            )
+            if item_clip_index != clip_index:
+                continue
+            value = (
+                item.get("segments")
+                or item.get("voiceover")
+                or item.get("voiceover_json")
+                or item.get("subtitles")
+                or item.get("text")
+            )
+            if isinstance(value, list):
+                matches.extend(value)
+            elif value:
+                matches.append(value)
+        return matches
+
+    def normalize_voiceover_segments(self, items: list, clip_duration: float) -> list[dict]:
+        segments: list[dict] = []
+        fallback_end = max(0.5, (clip_duration or 3.0) - 0.3)
+        for item in items:
+            if isinstance(item, str):
+                text = re.sub(r"\s+", " ", item).strip()
+                if text:
+                    segments.append({"start": 0.0, "end": fallback_end, "text": text})
+                continue
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text") or item.get("voiceover") or item.get("caption") or "").strip()
+            if not text:
+                continue
+            start = self.parse_float(item.get("start") or item.get("start_seconds"), 0.0)
+            end = self.parse_float(item.get("end") or item.get("end_seconds"), 0.0)
+            if end <= start:
+                end = min(fallback_end, start + 2.5)
+            segments.append({"start": start, "end": end, "text": text})
+        return segments
+
+    def run_generate_tts_audio(self, text: str, output_audio_path: Path) -> bool:
+        self.emit_log(f"Generating TTS: {output_audio_path}", "INFO")
+
+        def coroutine_factory():
+            return self.generate_tts_audio(
+                text,
+                output_audio_path,
+                voice=self.config.tts_voice,
+                rate=self.config.tts_rate,
+                pitch=self.config.tts_pitch,
+            )
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            try:
+                ok = asyncio.run(coroutine_factory())
+            except Exception as exc:
+                self.emit_log(f"TTS failed: {exc}", "WARNING")
+                return False
+        else:
+            ok, error = self.run_coroutine_factory_in_thread(coroutine_factory, "TTS")
+            if error is not None:
+                self.emit_log(f"TTS failed: {error}", "WARNING")
+                return False
+
+        if not ok:
+            self.emit_log("TTS failed: provider returned no audio.", "WARNING")
+            return False
+        if not output_audio_path.exists() or output_audio_path.stat().st_size <= 0:
+            self.emit_log(f"TTS failed: output file is missing or empty: {output_audio_path}", "WARNING")
+            return False
+        self.emit_log(f"TTS generated: {output_audio_path}", "SUCCESS")
+        return True
+
+    def run_coroutine_factory_in_thread(self, coroutine_factory, label: str = "async task") -> tuple[bool, Exception | None]:
+        result: dict[str, object] = {"ok": False, "error": None}
+
+        def runner() -> None:
+            try:
+                result["ok"] = bool(asyncio.run(coroutine_factory()))
+            except Exception as exc:
+                result["error"] = exc
+
+        thread = threading.Thread(target=runner, name=f"flow-bot-{label.lower().replace(' ', '-')}", daemon=True)
+        thread.start()
+        thread.join()
+        return bool(result["ok"]), result["error"] if isinstance(result["error"], Exception) else None
+
+    async def generate_tts_audio(
+        self,
+        text: str,
+        output_audio_path: Path,
+        voice: str = "vi-VN-HoaiMyNeural",
+        rate: str = "+0%",
+        pitch: str = "+0Hz",
+    ) -> bool:
+        output_audio_path.parent.mkdir(parents=True, exist_ok=True)
+        provider = str(self.config.tts_provider or "edge_tts").strip().lower()
+        if provider in {"none", ""}:
+            return False
+        if provider == "edge_tts":
+            edge_tts = self.ensure_edge_tts_module()
+
+            communicate = edge_tts.Communicate(text, voice=voice, rate=rate, pitch=pitch)
+            await communicate.save(output_audio_path.as_posix())
+            if not output_audio_path.exists() or output_audio_path.stat().st_size <= 0:
+                raise RuntimeError(f"edge-tts output is missing or empty: {output_audio_path}")
+            return True
+        if provider == "gtts":
+            from gtts import gTTS
+
+            await asyncio.to_thread(gTTS(text=text, lang="vi").save, output_audio_path.as_posix())
+            if not output_audio_path.exists() or output_audio_path.stat().st_size <= 0:
+                raise RuntimeError(f"gTTS output is missing or empty: {output_audio_path}")
+            return True
+        raise RuntimeError(f"TTS provider '{provider}' is not available/configured.")
+
+    def ensure_edge_tts_module(self):
+        try:
+            return importlib.import_module("edge_tts")
+        except ModuleNotFoundError:
+            pass
+
+        command = [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "edge-tts>=7.0.0",
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, timeout=180)
+        if result.returncode != 0:
+            error = (result.stderr or result.stdout or "pip install edge-tts failed").strip()
+            raise RuntimeError(error[-1200:])
+        importlib.invalidate_caches()
+        return importlib.import_module("edge_tts")
+
+    def mix_voiceover_with_video(
+        self,
+        input_video: Path,
+        voice_audio: Path,
+        output_video: Path,
+        background_volume: float = 0.35,
+        voice_volume: float = 1.0,
+    ) -> bool:
+        ffmpeg_path = find_ffmpeg_path()
+        if not ffmpeg_path:
+            self.emit_log("FFmpeg is not available; skipping audio mix.", "WARNING")
+            return False
+        if not input_video.exists() or not voice_audio.exists():
+            return False
+        output_video.parent.mkdir(parents=True, exist_ok=True)
+        if self.video_has_audio(input_video):
+            command = [
+                ffmpeg_path,
+                "-y",
+                "-i",
+                str(input_video),
+                "-i",
+                str(voice_audio),
+                "-filter_complex",
+                f"[0:a]volume={float(background_volume):.3f}[a0];[1:a]volume={float(voice_volume):.3f}[a1];[a0][a1]amix=inputs=2:duration=first:dropout_transition=0[aout]",
+                "-map",
+                "0:v",
+                "-map",
+                "[aout]",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                "-shortest",
+                str(output_video),
+            ]
+        else:
+            command = [
+                ffmpeg_path,
+                "-y",
+                "-i",
+                str(input_video),
+                "-i",
+                str(voice_audio),
+                "-map",
+                "0:v",
+                "-map",
+                "1:a",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                "-shortest",
+                str(output_video),
+            ]
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode == 0 and output_video.exists() and output_video.stat().st_size > 0:
+            return True
+        with suppress(Exception):
+            output_video.unlink()
+        error = (result.stderr or result.stdout or "FFmpeg audio mix failed.").strip()
+        self.emit_log(error[-800:], "WARNING")
+        return False
+
+    def validate_audio_stream_ffprobe(self, media_path: Path, emit_missing: bool = True) -> bool:
+        ffprobe_path = find_ffprobe_path()
+        if not media_path.exists():
+            if emit_missing:
+                self.emit_log(f"Media missing for audio validation: {media_path}", "WARNING")
+            return False
+        if not ffprobe_path:
+            if emit_missing:
+                self.emit_log("ffprobe is unavailable; validating audio stream with FFmpeg fallback.", "WARNING")
+            return self.validate_audio_stream_ffmpeg(media_path, emit_missing=emit_missing)
+        result = subprocess.run(
+            [
+                ffprobe_path,
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=codec_type",
+                "-of",
+                "csv=p=0",
+                str(media_path),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        has_audio = result.returncode == 0 and "audio" in (result.stdout or "").lower()
+        if has_audio:
+            self.emit_log(f"ffprobe audio stream OK: {media_path}", "INFO")
+            return True
+        if emit_missing:
+            detail = (result.stderr or result.stdout or "no audio stream").strip()
+            self.emit_log(f"ffprobe found no audio stream in {media_path}: {detail}", "WARNING")
+        return False
+
+    def validate_audio_stream_ffmpeg(self, media_path: Path, emit_missing: bool = True) -> bool:
+        ffmpeg_path = find_ffmpeg_path()
+        if not ffmpeg_path or not media_path.exists():
+            if emit_missing:
+                self.emit_log(f"FFmpeg unavailable or media missing for audio validation: {media_path}", "WARNING")
+            return False
+        result = subprocess.run(
+            [ffmpeg_path, "-hide_banner", "-i", str(media_path)],
+            capture_output=True,
+            text=True,
+        )
+        has_audio = bool(re.search(r"Audio:", result.stderr or result.stdout, re.I))
+        if has_audio and emit_missing:
+            self.emit_log(f"FFmpeg audio stream OK: {media_path}", "INFO")
+        elif emit_missing:
+            detail = (result.stderr or result.stdout or "no audio stream").strip()
+            self.emit_log(f"FFmpeg found no audio stream in {media_path}: {detail[-800:]}", "WARNING")
+        return has_audio
+
+    def video_has_audio(self, video_path: Path) -> bool:
+        return self.validate_audio_stream_ffprobe(video_path, emit_missing=False)
+
+    def safe_media_duration_seconds(self, media_path: Path) -> float:
+        with suppress(Exception):
+            return float(get_video_duration_seconds(media_path))
+        return 0.0
+
+    def trim_audio_to_duration(self, input_audio: Path, output_audio: Path, duration: float) -> bool:
+        ffmpeg_path = find_ffmpeg_path()
+        if not ffmpeg_path or duration <= 0:
+            return False
+        output_audio.parent.mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(
+            [
+                ffmpeg_path,
+                "-y",
+                "-i",
+                str(input_audio),
+                "-t",
+                f"{duration:.3f}",
+                "-c:a",
+                "libmp3lame",
+                str(output_audio),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode == 0 and output_audio.exists() and output_audio.stat().st_size > 0
+
+    def write_segments_as_srt(self, segments: list[dict], output_srt: Path) -> bool:
+        if not segments:
+            return False
+        lines: list[str] = []
+        for segment in segments:
+            text = str(segment.get("text") or "").strip()
+            if not text:
+                continue
+            start = self.parse_float(segment.get("start"), 0.0)
+            end = self.parse_float(segment.get("end"), start + 2.0)
+            if end <= start:
+                end = start + 2.0
+            lines.extend(
+                [
+                    str(len(lines) // 4 + 1),
+                    f"{seconds_to_srt_time(start)} --> {seconds_to_srt_time(end)}",
+                    text,
+                    "",
+                ]
+            )
+        if not lines:
+            return False
+        output_srt.parent.mkdir(parents=True, exist_ok=True)
+        output_srt.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+        return True
+
+    def combine_clip_subtitles(
+        self,
+        clip_subtitle_segments: list[tuple[int, float, list[dict]]],
+        output_srt: Path,
+    ) -> bool:
+        lines: list[str] = []
+        offset = 0.0
+        for _clip_index, clip_duration, segments in sorted(clip_subtitle_segments, key=lambda item: item[0]):
+            for segment in segments:
+                text = str(segment.get("text") or "").strip()
+                if not text:
+                    continue
+                start = offset + self.parse_float(segment.get("start"), 0.0)
+                end = offset + self.parse_float(segment.get("end"), start - offset + 2.0)
+                if end <= start:
+                    end = start + 2.0
+                lines.extend(
+                    [
+                        str(len(lines) // 4 + 1),
+                        f"{seconds_to_srt_time(start)} --> {seconds_to_srt_time(end)}",
+                        text,
+                        "",
+                    ]
+                )
+            offset += max(0.0, float(clip_duration or 0.0))
+        if not lines:
+            return False
+        output_srt.parent.mkdir(parents=True, exist_ok=True)
+        output_srt.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+        return True
+
+    def has_native_scene_builder_controls(self) -> bool:
+        selectors = [
+            '[data-flow-action="add-clip-to-scene"]',
+            '[data-flow-action="download-scene"]',
+            '[data-flow-field="download-scene"]',
+            '[data-flow-output="scene-id"]',
+            '[data-flow-output="scene-clip-list"]',
+        ]
+        return any(
+            self.find_in_all_frames(selector, require_visible=False) is not None
+            for selector in selectors
+        )
+
     def add_clip_to_native_scene(self, frame: Frame) -> bool:
         button = self.find_button_by_selectors_or_text(
             frame,
@@ -1851,7 +2775,23 @@ class FlowBot:
                     "clip_role": result.get("clip_role", ""),
                     "duration": result.get("clip_duration", ""),
                     "video_file": result.get("clip_video_file", ""),
+                    "raw_video_file": result.get("raw_video_file", ""),
+                    "voiced_video_file": result.get("voiced_video_file") or result.get("voiced_clip_file", ""),
                     "last_frame": result.get("last_frame_file", ""),
+                    "voiceover_text": result.get("voiceover_text", ""),
+                    "voiceover_json": result.get("voiceover_json", []),
+                    "voiceover_json_file": result.get("voiceover_json_file", ""),
+                    "voiceover_language": result.get("voiceover_language", ""),
+                    "voiceover_mode": result.get("voiceover_mode", ""),
+                    "voiceover_status": result.get("voiceover_status", ""),
+                    "tts_required": result.get("tts_required", ""),
+                    "tts_enabled": result.get("tts_enabled", ""),
+                    "tts_provider": result.get("tts_provider", ""),
+                    "tts_status": result.get("tts_status", ""),
+                    "tts_error": result.get("tts_error", ""),
+                    "tts_audio_file": result.get("tts_audio_file", ""),
+                    "subtitle_file": result.get("subtitle_file", ""),
+                    "audio_pipeline": result.get("audio_pipeline", ""),
                     "status": result.get("status", ""),
                 }
             )
@@ -1872,6 +2812,9 @@ class FlowBot:
             "video_file": final_video_file,
             "storage_path": f"storage/{self.batch_id()}/{final_video_file}" if final_video_file else "",
             "merge_method": merge_method,
+            "audio_pipeline": postprocess_result.get("audio_pipeline") or ("external-tts" if self.config.enable_external_tts else "raw"),
+            "tts_provider": postprocess_result.get("tts_provider") or self.config.tts_provider,
+            "final_subtitle_file": postprocess_result.get("final_subtitle_file", ""),
             "status": status,
             "created_at": created_at,
             "updated_at": created_at,
@@ -2042,6 +2985,20 @@ class FlowBot:
                 scene_total_raw = self.read_flow_output_text("scene-total")
                 scene_role = self.read_flow_output_text("scene-role") or str(scene["scene_role"])
                 scene_title = self.read_flow_output_text("scene-title") or str(scene["scene_title"])
+                current_clip_raw = self.read_flow_output_text("current-clip-index")
+                expected_clip_index = self.parse_scene_int(
+                    clip_metadata.get("clip_index") if clip_metadata else None,
+                    0,
+                )
+                if expected_clip_index:
+                    current_clip_index = self.parse_scene_int(current_clip_raw, 0)
+                    if current_clip_index and current_clip_index != expected_clip_index:
+                        self.emit_log(
+                            f"Video output is for clip {current_clip_index}; waiting for clip {expected_clip_index}...",
+                            "INFO",
+                        )
+                        self.sleep_ms(1_000)
+                        continue
                 video_url = video_url_from_data or video_url_fallback
                 video_filename = self.read_flow_output_text("video-filename")
                 video_download_data = self.read_flow_output_text("video-download-data")
@@ -2181,7 +3138,21 @@ class FlowBot:
             "video_file",
             "storage_path",
             "video_url",
+            "voiceover_text",
             "voiceover",
+            "voiceover_json_file",
+            "voiceover_language",
+            "voiceover_mode",
+            "voiceover_status",
+            "tts_required",
+            "tts_enabled",
+            "tts_provider",
+            "tts_status",
+            "tts_error",
+            "tts_audio_file",
+            "voiced_clip_file",
+            "voiced_video_file",
+            "audio_pipeline",
             "video_duration",
             "subtitles_srt",
             "subtitles_json",
@@ -2205,7 +3176,7 @@ class FlowBot:
                 writer.writeheader()
             writer.writerow({key: row.get(key, "") for key in fieldnames})
 
-    def persist_scene_video_result(self, row: dict) -> None:
+    def persist_scene_video_result(self, row: dict, frame: Frame | None = None) -> None:
         scene_group_id = str(row.get("scene_group_id") or "").strip() or "ungrouped"
         group_dir = self.video_group_dir(scene_group_id)
         group_dir.mkdir(parents=True, exist_ok=True)
@@ -2225,12 +3196,18 @@ class FlowBot:
             batch_final_target = batch_final_dir / video_file
             video_bytes = self.resolve_video_bytes(row)
             if video_bytes is None:
-                raise RuntimeError(
-                    f"Could not download scene video for group {scene_group_id} "
-                    f"scene {scene_number} before continuing."
-                )
-            target.write_bytes(video_bytes)
-            batch_raw_target.write_bytes(video_bytes)
+                if frame is not None and self.try_download_video_button(frame, batch_raw_target):
+                    self.emit_log("Saved scene video through download button fallback.", "SUCCESS")
+                    with suppress(Exception):
+                        video_bytes = batch_raw_target.read_bytes()
+                else:
+                    raise RuntimeError(
+                        f"Could not download scene video for group {scene_group_id} "
+                        f"scene {scene_number} before continuing."
+                    )
+            if video_bytes is not None:
+                batch_raw_target.write_bytes(video_bytes)
+            shutil.copyfile(batch_raw_target, target)
             self.emit_log(f"Saved raw scene video: {batch_raw_target.name}", "SUCCESS")
             postprocess_result = self.create_final_video_with_postprocessing(batch_raw_target, batch_final_target, row)
             final_target_for_group = batch_final_target if batch_final_target.exists() else batch_raw_target
@@ -2737,10 +3714,16 @@ class FlowBot:
                 return response.content
 
         if video_url.startswith("blob:"):
-            return self.fetch_url_bytes_in_browser(video_url)
+            try:
+                return self.fetch_url_bytes_in_browser(video_url)
+            except Exception as exc:
+                self.emit_log(f"Browser fetch for blob video failed; trying download button fallback. {exc}", "WARNING")
+                return None
 
-        with suppress(Exception):
+        try:
             return self.fetch_url_bytes_in_browser(video_url)
+        except Exception as exc:
+            self.emit_log(f"Browser fetch for video URL failed; trying download button fallback. {exc}", "WARNING")
         return None
 
     def decode_data_url(self, value: str) -> bytes:
@@ -2959,6 +3942,8 @@ class FlowBot:
             btn = self.find_button_by_selectors_or_text(
                 scope,
                 selectors=[
+                    '[data-flow-action="next-day"]',
+                    '[data-flow-field="next-day"]',
                     '[data-flow-action="create-next-product"]',
                     '[data-flow-field="create-next-product"]',
                 ],
@@ -2967,6 +3952,7 @@ class FlowBot:
                     r"tao tiep san pham moi",
                     r"tiếp tục tạo video",
                     r"tiep tuc tao video",
+                    r"next day",
                     r"create next product",
                     r"next product",
                 ],
@@ -3328,7 +4314,14 @@ class FlowBot:
         if not preset_json:
             return
 
-        self.ensure_preset_manager_open(frame)
+        if not self.has_preset_import_controls():
+            self.emit_log("Preset JSON was provided, but this tool has no preset import controls. Skipping preset import.", "INFO")
+            return
+
+        if not self.ensure_preset_manager_open(frame, optional=True):
+            self.emit_log("Preset manager is not available in this tool. Skipping preset import.", "INFO")
+            return
+
         self.emit_log("Looking for preset import textarea...")
         textarea = self.find_visible_by_selector(
             frame,
@@ -3339,7 +4332,8 @@ class FlowBot:
             ],
         )
         if textarea is None:
-            raise RuntimeError("Preset import textarea not found.")
+            self.emit_log("Preset import textarea not found. Skipping preset import.", "INFO")
+            return
 
         textarea.scroll_into_view_if_needed()
         textarea.click()
@@ -3354,7 +4348,8 @@ class FlowBot:
             require_enabled=True,
         )
         if button is None:
-            raise RuntimeError("Import preset button not found.")
+            self.emit_log("Import preset button not found. Skipping preset import.", "INFO")
+            return
 
         button.click()
         self.emit_log("Imported preset from paste.", "SUCCESS")
@@ -3368,28 +4363,35 @@ class FlowBot:
         if not logo_path.exists():
             raise FileNotFoundError(f"Website logo not found: {logo_path}")
 
-        self.ensure_preset_manager_open(frame)
         self.emit_log("Looking for website logo upload input...")
         for selector in (
             'input[data-flow-field="website-logo-upload-input"]',
             '[data-flow-field="website-logo-upload-input"] input',
             '[data-flow-field="website-logo-upload-input"]',
         ):
-            with suppress(Exception):
-                input_locator = frame.locator(selector).first
-                if input_locator.count():
-                    self.emit_log("Uploading website logo...")
-                    input_locator.set_input_files(logo_path.as_posix())
-                    self.emit_log("Uploaded website logo.", "SUCCESS")
-                    self.sleep_ms(self.config.extra_wait_after_upload_ms)
-                    return
+            input_locator = self.find_in_all_frames(selector, require_visible=False)
+            if input_locator is not None:
+                self.emit_log("Uploading website logo...")
+                input_locator.set_input_files(logo_path.as_posix())
+                self.emit_log("Uploaded website logo.", "SUCCESS")
+                self.sleep_ms(self.config.extra_wait_after_upload_ms)
+                return
 
         upload_area = self.find_visible_by_selector(
             frame,
             ['[data-flow-field="website-logo-upload"]'],
         )
         if upload_area is None:
-            raise RuntimeError("Website logo upload field not found.")
+            if not self.ensure_preset_manager_open(frame, optional=True):
+                self.emit_log("Website logo was provided, but this tool has no website-logo upload field. Skipping tool logo upload.", "INFO")
+                return
+            upload_area = self.find_visible_by_selector(
+                frame,
+                ['[data-flow-field="website-logo-upload"]'],
+            )
+            if upload_area is None:
+                self.emit_log("Website logo upload field not found after opening preset manager. Skipping tool logo upload.", "INFO")
+                return
 
         assert self.page is not None
         self.emit_log("Uploading website logo...")
@@ -3403,18 +4405,32 @@ class FlowBot:
                 '[data-flow-field="website-logo-upload-input"] input',
                 '[data-flow-field="website-logo-upload-input"]',
             ):
-                with suppress(Exception):
-                    input_locator = frame.locator(selector).first
-                    if input_locator.count():
-                        input_locator.set_input_files(logo_path.as_posix())
-                        break
+                input_locator = self.find_in_all_frames(selector, require_visible=False)
+                if input_locator is not None:
+                    input_locator.set_input_files(logo_path.as_posix())
+                    break
             else:
-                raise RuntimeError("Website logo file input did not appear.")
+                self.emit_log("Website logo file input did not appear. Skipping tool logo upload.", "INFO")
+                return
 
         self.emit_log("Uploaded website logo.", "SUCCESS")
         self.sleep_ms(self.config.extra_wait_after_upload_ms)
 
-    def ensure_preset_manager_open(self, frame: Frame) -> None:
+    def has_preset_import_controls(self) -> bool:
+        selectors = [
+            '[data-flow-field="preset-json-import-textarea"]',
+            'textarea[data-flow-field="preset-json-import-textarea"]',
+            '[data-flow-field="preset-json-import-textarea"] textarea',
+            '[data-flow-field="import-preset-from-paste"]',
+            '[data-flow-field="preset-manager-toggle"]',
+            '[data-flow-action="preset-manager-toggle"]',
+        ]
+        return any(
+            self.find_in_all_frames(selector, require_visible=False) is not None
+            for selector in selectors
+        )
+
+    def ensure_preset_manager_open(self, frame: Frame, optional: bool = False) -> bool:
         if self.find_visible_by_selector(
             frame,
             [
@@ -3426,7 +4442,7 @@ class FlowBot:
                 '[data-flow-field="website-logo-upload"]',
             ],
         ) is not None:
-            return
+            return True
 
         self.emit_log("Looking for preset manager toggle...")
         toggle = self.find_visible_by_selector(
@@ -3438,12 +4454,15 @@ class FlowBot:
             require_enabled=True,
         )
         if toggle is None:
+            if optional:
+                return False
             raise RuntimeError("Preset manager toggle not found.")
 
         toggle.scroll_into_view_if_needed()
         toggle.click()
         self.emit_log("Opened preset manager toggle.", "SUCCESS")
         self.sleep_ms(500)
+        return True
 
     def find_visible_by_selector(
         self,
@@ -3645,6 +4664,8 @@ class FlowBot:
             self.ensure_browser_alive(force=True)
             frame = self.refresh_frame_reference(frame)
             self.wait_for_flow_render_idle(frame)
+            if self.try_direct_product_image_upload(image_path):
+                return frame
             diagnostics = self.capture_media_upload_diagnostics(frame)
             self.log_media_upload_diagnostics(diagnostics)
             self.emit_log("Attempting media upload.", "INFO")
@@ -3697,6 +4718,43 @@ class FlowBot:
                 self.sleep_ms(1_500)
                 self.emit_log("Confirmed selected image.")
 
+    def try_direct_product_image_upload(self, image_path: Path) -> bool:
+        selectors = [
+            'input[data-flow-field="product-upload-input"]',
+            '[data-flow-field="product-upload-input"] input[type="file"]',
+            '[data-flow-field="product-upload"] input[type="file"]',
+        ]
+        for selector in selectors:
+            input_locator = self.find_in_all_frames(selector, require_visible=False)
+            if input_locator is None:
+                continue
+            try:
+                self.emit_log("Uploading product image through direct file input...", "INFO")
+                input_locator.set_input_files(image_path.as_posix())
+                if self.wait_for_product_image_preview(timeout_ms=max(60_000, self.config.extra_wait_after_upload_ms)):
+                    self.emit_log("Product image preview is ready.", "SUCCESS")
+                    return True
+                self.emit_log("Product image input accepted the file, but preview did not appear.", "WARNING")
+                return False
+            except Exception as exc:
+                self.emit_log(f"Direct product image upload failed for {selector}: {exc}", "WARNING")
+        return False
+
+    def wait_for_product_image_preview(self, timeout_ms: int = 30_000) -> bool:
+        deadline = time.time() + timeout_ms / 1000
+        selectors = [
+            '[data-flow-field="product-upload"] img',
+            '[data-flow-field="product-upload"] [src^="data:image"]',
+            '[data-flow-field="product-upload"] [src^="blob:"]',
+        ]
+        while time.time() < deadline:
+            self.ensure_browser_alive()
+            for selector in selectors:
+                if self.find_in_all_frames(selector, require_visible=True) is not None:
+                    return True
+            self.sleep_ms(500)
+        return False
+
     def try_upload_image_with_dialog_candidates(self, frame: Frame, image_path: Path) -> tuple[bool, str]:
         selectors_tried: list[str] = []
         last_error = ""
@@ -3714,9 +4772,9 @@ class FlowBot:
                         f"Upload dialog attempt {attempt}/{self.config.max_upload_dialog_retries}: {selector}",
                         "INFO",
                     )
-                    if selector == 'input[type="file"]':
+                    if self.is_file_input_locator(locator):
                         locator.set_input_files(image_path.as_posix())
-                        self.emit_log("Attached image via visible file input.", "SUCCESS")
+                        self.emit_log("Attached image via file input.", "SUCCESS")
                         self.finish_media_dialog_upload(frame, image_path)
                         return True, ""
 
@@ -3738,13 +4796,24 @@ class FlowBot:
         )
         return False, last_error or "All upload candidates exhausted."
 
+    def is_file_input_locator(self, locator: Locator) -> bool:
+        with suppress(Exception):
+            return bool(
+                locator.evaluate(
+                    """(el) => el instanceof HTMLInputElement && (el.type || '').toLowerCase() === 'file'"""
+                )
+            )
+        return False
+
     def find_upload_candidates(self, frame: Frame) -> list[tuple[str, Locator]]:
         candidate_specs = [
+            ('input[data-flow-field="product-upload-input"]', 'input[data-flow-field="product-upload-input"]'),
+            ('[data-flow-field="product-upload"] input[type="file"]', '[data-flow-field="product-upload"] input[type="file"]'),
+            ('[data-flow-field="product-upload"]', '[data-flow-field="product-upload"]'),
             ('[data-flow-action="upload-image"]', '[data-flow-action="upload-image"]'),
             ('button:has-text("Upload")', 'button:has-text("Upload")'),
             ('button:has-text("Add Media")', 'button:has-text("Add Media")'),
             ('button:has-text("Image")', 'button:has-text("Image")'),
-            ('input[type="file"]', 'input[type="file"]'),
         ]
         candidates: list[tuple[str, Locator]] = []
         for label, selector in candidate_specs:
@@ -3997,16 +5066,21 @@ class FlowBot:
         return frame
 
     def clean_uploaded_product_image_in_flow(self, frame: Frame, product: ProductRow | None = None) -> None:
-        if not self.config.enable_flow_product_cleanup:
+        has_enhance_controls = self.has_flow_product_enhance_controls()
+        if not self.config.enable_flow_product_cleanup and not has_enhance_controls:
             return
 
-        self.emit_log("Waiting for uploaded product image before Flow cleanup...", "INFO")
+        if not self.has_flow_product_cleanup_controls():
+            self.emit_log("Flow product enhancement controls are not present in this tool; skipping Flow enhancement.", "INFO")
+            return
+
+        self.emit_log("Waiting for uploaded product image before Flow enhancement...", "INFO")
         product_label = self.slugify(product.product_name) if product else "product"
         product_label = product_label or "product"
         if not self.wait_for_flow_product_cleanup_ready(frame):
-            self.capture_debug(f"flow-product-cleanup-not-ready-{product_label}")
+            self.capture_debug(f"flow-product-enhance-not-ready-{product_label}")
             self.emit_log(
-                "Flow product cleanup controls did not become ready; skipping Flow cleanup and continuing.",
+                "Flow product enhancement controls did not become ready; skipping Flow enhancement and continuing.",
                 "WARNING",
             )
             return
@@ -4015,28 +5089,61 @@ class FlowBot:
         button = self.find_visible_by_selector(
             frame,
             [
+                '[data-flow-action="enhance-product-image"]',
+                '[data-flow-field="enhance-product-image"]',
                 '[data-flow-action="clean-product-image"]',
                 '[data-flow-field="clean-product-image"]',
             ],
             require_enabled=True,
         )
         if button is None:
-            self.emit_log("Flow product cleanup button not found; skipping Flow cleanup.", "WARNING")
+            self.emit_log("Flow product enhancement button not found; skipping Flow enhancement.", "WARNING")
             return
 
-        self.emit_log("Clicking Flow product cleanup button...", "INFO")
+        before_fingerprint = self.product_upload_image_fingerprint()
+        action = "enhance" if self.locator_matches_any_selector(
+            button,
+            ['[data-flow-action="enhance-product-image"]', '[data-flow-field="enhance-product-image"]'],
+        ) else "cleanup"
+        self.emit_log(f"Clicking Flow product {action} button...", "INFO")
         try:
             button.scroll_into_view_if_needed()
             button.click()
-            if self.wait_for_flow_product_cleanup_success(frame):
-                self.emit_log("Flow product cleanup status: success.", "SUCCESS")
+            if self.wait_for_flow_product_cleanup_success(frame, before_fingerprint=before_fingerprint, action=action):
+                self.emit_log(f"Flow product {action} status: success.", "SUCCESS")
             else:
-                self.emit_log("Flow product cleanup did not finish; continuing with uploaded cleaned image.", "WARNING")
+                self.emit_log(f"Flow product {action} did not finish; continuing with uploaded image.", "WARNING")
         except Exception as exc:
-            self.emit_log(f"Flow product cleanup skipped after error: {exc}", "WARNING")
+            self.emit_log(f"Flow product enhancement skipped after error: {exc}", "WARNING")
+
+    def has_flow_product_cleanup_controls(self) -> bool:
+        selectors = [
+            '[data-flow-action="enhance-product-image"]',
+            '[data-flow-field="enhance-product-image"]',
+            '[data-flow-action="clean-product-image"]',
+            '[data-flow-field="clean-product-image"]',
+            '[data-flow-field="enable-product-cleanup"]',
+            '[data-flow-output="product-enhance-status"]',
+            '[data-flow-output="product-image-enhance-status"]',
+            '[data-flow-output="product-cleanup-status"]',
+        ]
+        return any(
+            self.find_in_all_frames(selector, require_visible=False) is not None
+            for selector in selectors
+        )
+
+    def has_flow_product_enhance_controls(self) -> bool:
+        selectors = [
+            '[data-flow-action="enhance-product-image"]',
+            '[data-flow-field="enhance-product-image"]',
+        ]
+        return any(
+            self.find_in_all_frames(selector, require_visible=False) is not None
+            for selector in selectors
+        )
 
     def wait_for_flow_product_cleanup_ready(self, frame: Frame) -> bool:
-        timeout_ms = min(max(1, self.config.flow_product_cleanup_timeout_ms), 30_000)
+        timeout_ms = max(1, self.config.flow_product_cleanup_timeout_ms)
         deadline = time.time() + timeout_ms / 1000
         while time.time() < deadline:
             self.ensure_browser_alive()
@@ -4044,13 +5151,15 @@ class FlowBot:
             button = self.find_visible_by_selector(
                 frame,
                 [
+                    '[data-flow-action="enhance-product-image"]',
+                    '[data-flow-field="enhance-product-image"]',
                     '[data-flow-action="clean-product-image"]',
                     '[data-flow-field="clean-product-image"]',
                 ],
                 require_enabled=True,
             )
             if button is not None:
-                self.emit_log("Uploaded product image is ready for Flow cleanup.", "SUCCESS")
+                self.emit_log("Uploaded product image is ready for Flow enhancement.", "SUCCESS")
                 return True
             self.sleep_ms(500)
         return False
@@ -4068,30 +5177,105 @@ class FlowBot:
                 self.sleep_ms(400)
                 self.emit_log("Enabled Flow product cleanup toggle.", "INFO")
 
-    def wait_for_flow_product_cleanup_success(self, frame: Frame) -> bool:
-        timeout_ms = min(max(1, self.config.flow_product_cleanup_timeout_ms), 30_000)
+    def wait_for_flow_product_cleanup_success(
+        self,
+        frame: Frame,
+        before_fingerprint: str = "",
+        action: str = "cleanup",
+    ) -> bool:
+        timeout_ms = max(1, self.config.flow_product_cleanup_timeout_ms)
         deadline = time.time() + timeout_ms / 1000
         last_status = ""
+        saw_processing = False
+        min_wait_until = time.time() + 2.0
         success_states = {"success", "succeeded", "done", "completed", "complete", "thanh cong"}
+        processing_states = {"processing", "pending", "running", "loading", "enhancing", "cleaning", "dang xu ly"}
         failure_states = {"failed", "fail", "error", "loi", "that bai"}
         while time.time() < deadline:
             self.ensure_browser_alive()
             frame = self.refresh_frame_reference(frame)
-            status = self.read_flow_output_text_from_scope(frame, "product-cleanup-status")
+            status = self.read_product_enhancement_status(frame)
             normalized = self.ascii_fold(status.strip().lower())
             if normalized and normalized != last_status:
-                self.emit_log(f"Flow product cleanup status: {status}", "INFO")
+                self.emit_log(f"Flow product {action} status: {status}", "INFO")
                 last_status = normalized
             if normalized in success_states:
                 return True
+            if normalized in processing_states:
+                saw_processing = True
             if normalized in failure_states:
-                self.emit_log(f"Flow product cleanup failed: {status}", "WARNING")
+                self.emit_log(f"Flow product {action} failed: {status}", "WARNING")
                 return False
+            if before_fingerprint:
+                current_fingerprint = self.product_upload_image_fingerprint()
+                if current_fingerprint and current_fingerprint != before_fingerprint and time.time() >= min_wait_until:
+                    self.emit_log(f"Flow product {action} image updated.", "SUCCESS")
+                    return True
+            button_state = self.product_enhancement_button_state()
+            if button_state in {"disabled", "busy"}:
+                saw_processing = True
+            elif saw_processing and button_state == "ready" and self.wait_for_product_image_preview(timeout_ms=2_000):
+                return True
             self.sleep_ms(800)
         self.emit_log(
-            f"Flow product cleanup did not finish successfully. Last status: {last_status or 'unknown'}",
+            f"Flow product {action} did not finish successfully. Last status: {last_status or 'unknown'}",
             "WARNING",
         )
+        return False
+
+    def read_product_enhancement_status(self, frame: Frame) -> str:
+        for output_name in (
+            "product-enhance-status",
+            "product-image-enhance-status",
+            "product-cleanup-status",
+        ):
+            status = self.read_flow_output_text_from_scope(frame, output_name)
+            if status:
+                return status
+        return ""
+
+    def product_upload_image_fingerprint(self) -> str:
+        selectors = [
+            '[data-flow-field="product-upload"] img',
+            '[data-flow-field="product-upload"] [src^="data:image"]',
+            '[data-flow-field="product-upload"] [src^="blob:"]',
+        ]
+        for selector in selectors:
+            locator = self.find_in_all_frames(selector, require_visible=False)
+            if locator is None:
+                continue
+            with suppress(Exception):
+                src = locator.get_attribute("src") or ""
+                current_src = locator.get_attribute("currentSrc") or ""
+                alt = locator.get_attribute("alt") or ""
+                return f"{len(src)}:{src[:80]}:{src[-80:]}:{current_src[:80]}:{current_src[-80:]}:{alt}"
+        return ""
+
+    def product_enhancement_button_state(self) -> str:
+        locator = self.find_in_all_frames(
+            '[data-flow-action="enhance-product-image"], [data-flow-field="enhance-product-image"], [data-flow-action="clean-product-image"], [data-flow-field="clean-product-image"]',
+            require_visible=True,
+        )
+        if locator is None:
+            return "missing"
+        with suppress(Exception):
+            if locator.is_disabled():
+                return "disabled"
+        with suppress(Exception):
+            aria_busy = (locator.get_attribute("aria-busy") or "").strip().lower()
+            if aria_busy == "true":
+                return "busy"
+        with suppress(Exception):
+            text = self.ascii_fold((locator.inner_text() or "").strip().lower())
+            if re.search(r"loading|processing|enhancing|cleaning|dang xu ly|toi uu", text):
+                return "busy"
+        return "ready"
+
+    def locator_matches_any_selector(self, locator: Locator, selectors: list[str]) -> bool:
+        for selector in selectors:
+            with suppress(Exception):
+                if locator.evaluate("(el, selector) => el.matches(selector)", selector):
+                    return True
         return False
 
     def read_flow_output_text_from_scope(self, scope: Page | Frame | Locator, output_name: str) -> str:

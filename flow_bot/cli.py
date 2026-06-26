@@ -86,6 +86,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         help="Retry count for each failed clip generation.",
     )
+    run.add_argument("--no-external-tts", action="store_true", help="Disable bot-side Vietnamese TTS mixing.")
+    run.add_argument(
+        "--tts-provider",
+        default="edge_tts",
+        choices=["edge_tts", "gtts", "azure", "openai", "none"],
+        help="Bot-side TTS provider for Flow voiceover data.",
+    )
+    run.add_argument("--tts-voice", default="vi-VN-HoaiMyNeural", help="Voice name for edge-tts.")
+    run.add_argument("--tts-rate", default="+0%", help="Speech rate for edge-tts, e.g. +0% or -10%.")
+    run.add_argument("--tts-pitch", default="+0Hz", help="Speech pitch for edge-tts, e.g. +0Hz or +8Hz.")
+    run.add_argument("--tts-volume", type=float, default=1.0, help="Multiplier applied to generated TTS audio.")
+    run.add_argument("--background-audio-volume", type=float, default=0.35, help="Existing clip audio volume during mix.")
+    run.add_argument("--voice-audio-volume", type=float, default=1.0, help="Voiceover track volume during mix.")
     run.add_argument("--no-product-image-cleanup", action="store_true")
     run.add_argument(
         "--cleanup-mode",
@@ -123,6 +136,14 @@ def build_config(args: argparse.Namespace) -> RunConfig:
         target_final_duration=getattr(args, "target_final_duration", 20),
         download_mode=getattr(args, "download_mode", "save_local"),
         max_generate_retries=max(0, getattr(args, "max_generate_retries", 1)),
+        enable_external_tts=not getattr(args, "no_external_tts", False),
+        tts_provider=getattr(args, "tts_provider", "edge_tts"),
+        tts_voice=getattr(args, "tts_voice", "vi-VN-HoaiMyNeural"),
+        tts_rate=getattr(args, "tts_rate", "+0%"),
+        tts_pitch=getattr(args, "tts_pitch", "+0Hz"),
+        tts_volume=max(0.0, float(getattr(args, "tts_volume", 1.0))),
+        background_audio_volume=max(0.0, float(getattr(args, "background_audio_volume", 0.35))),
+        voice_audio_volume=max(0.0, float(getattr(args, "voice_audio_volume", 1.0))),
         enable_product_image_cleanup=not getattr(args, "no_product_image_cleanup", False),
         cleanup_mode=getattr(args, "cleanup_mode", "auto"),
         keep_browser_open=getattr(args, "keep_browser_open", False),

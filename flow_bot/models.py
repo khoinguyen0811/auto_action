@@ -9,6 +9,7 @@ SceneMode = Literal["manual_pause", "skip", "auto_excel"]
 MultiClipMode = Literal["off", "auto", "2", "3"]
 SceneBuilderMode = Literal["native_flow", "bot_merge", "off"]
 DownloadMode = Literal["capture_only", "save_local", "save_local_and_zip"]
+TtsProvider = Literal["edge_tts", "gtts", "azure", "openai", "none"]
 VideoModel = Literal[
     "auto",
     "Omni Flash",
@@ -85,6 +86,14 @@ class RunConfig:
     subtitle_position: str = "bottom"
     subtitle_font_size: int = 18
     subtitle_style: str = "clean"
+    enable_external_tts: bool = True
+    tts_provider: TtsProvider = "edge_tts"
+    tts_voice: str = "vi-VN-HoaiMyNeural"
+    tts_rate: str = "+0%"
+    tts_pitch: str = "+0Hz"
+    tts_volume: float = 1.0
+    background_audio_volume: float = 0.35
+    voice_audio_volume: float = 1.0
     enable_product_image_cleanup: bool = True
     cleanup_mode: str = "auto"
     cleanup_background: str = "transparent"
